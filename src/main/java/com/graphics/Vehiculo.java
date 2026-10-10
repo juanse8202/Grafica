@@ -12,6 +12,8 @@ public class Vehiculo extends AppCiudad {
     private boolean cameraArea = false;  // Camara para primera y tercera persona
     private boolean farosEncendidos = false; //2.3
 
+    private boolean mostrarAyuda = true; //5.2
+
     private final AutoTrafico[] trafico = { //5.1
         new AutoTrafico(new float[][]{ //5.1
                 {centro(2), centro(2)}, {centro(18), centro(2)}, //5.1
@@ -109,6 +111,10 @@ public class Vehiculo extends AppCiudad {
             farosEncendidos = !farosEncendidos; //2.3
         } 
 
+        if (key == GLFW_KEY_H) { //5.2
+            mostrarAyuda = !mostrarAyuda;
+        }
+
     }
 
     private void reiniciar() {
@@ -188,6 +194,18 @@ public class Vehiculo extends AppCiudad {
 
         verificarEntrega(); // agregue
         actualizarTitulo(); 
+    }
+
+    @Override
+    protected void dibujarInterfaz() {
+        panelHUD.dibujar(
+                ancho,
+                alto,
+                velocidad,
+                farosEncendidos,
+                modoNoche,
+                mostrarAyuda
+        );
     }
 
     protected void actualizarTitulo() {

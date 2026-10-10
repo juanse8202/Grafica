@@ -1,4 +1,5 @@
 com\graphics\App.class
+com\graphics\PanelHUD.class
 com\graphics\AppUnion.class
 com\graphics\Vehiculo.class
 com\graphics\AppCiudad.class

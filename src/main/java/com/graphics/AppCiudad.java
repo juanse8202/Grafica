@@ -69,6 +69,8 @@ public class AppCiudad {
     protected int ancho = 1100;
     protected int alto = 760;
 
+    protected PanelHUD panelHUD; //punto 5.2
+
     // Angulo inicial de la camara de la ciudad
     protected float orbita = 0.6f;
 
@@ -241,6 +243,8 @@ public class AppCiudad {
 
         crearPrograma();
         crearCubo();
+
+        panelHUD = new PanelHUD(); //punto 5.2
     }
 
     private void loop() {
@@ -278,6 +282,11 @@ public class AppCiudad {
     }
 
     private void limpiar() {
+
+        if (panelHUD != null) {
+            panelHUD.close(); //punto 5.2
+        }
+
         if (programa != 0) {  // Comprueba si existe un programa en la GPU.
             glDeleteProgram(programa);  // Libera el programa de shaders.
         }
@@ -307,6 +316,7 @@ public class AppCiudad {
         if (key == GLFW_KEY_N) {
             modoNoche = !modoNoche;
         }
+
     }
 
     protected boolean pulsada(int key) {
@@ -391,6 +401,8 @@ public class AppCiudad {
             dibujarMinimapa(); // punto 3.3
         }
 
+        dibujarInterfaz(); // punto 5.2
+
         if (glGetError() != GL_NO_ERROR){
             throw new IllegalStateException("Error OpenGL al dibujar");
         }
@@ -429,6 +441,31 @@ public class AppCiudad {
         glViewport(0, 0, ancho, alto); //3.3
     } //3.3
 
+    protected void dibujarInterfaz() { //5.2
+        // Vehiculo implementa el dibujo del panel.
+    }
+
+    private void dibujarPapelera(float x, float z) {
+        // Cuerpo verde.
+        caja(x, 0.85f, z,
+                0.75f, 1.10f, 0.75f,
+                0.08f, 0.38f, 0.22f);
+
+        // Tapa.
+        caja(x, 1.45f, z,
+                0.85f, 0.12f, 0.85f,
+                0.05f, 0.18f, 0.10f);
+
+        // Abertura negra en el frente.
+        caja(x, 1.12f, z - 0.385f,
+                0.45f, 0.22f, 0.04f,
+                0.02f, 0.02f, 0.02f);
+
+        // Base.
+        caja(x, 0.38f, z,
+                0.85f, 0.16f, 0.85f,
+                0.12f, 0.14f, 0.16f);
+    }
 
     protected void escena() {
         caja(0, -0.5f, 0, 210, 0.5f, 210, 0.16f, 0.19f, 0.23f);  // modifique 210
@@ -455,6 +492,8 @@ public class AppCiudad {
                         
                         dibujarArbolesParque(x, z); //3.1
                         dibujarBancosParque(x, z); //3.1
+
+                        dibujarPapelera(x + 3.4f, z + 2.5f); //5.2
                         
                     }
                     dibujarPasoJuntoManzana(fila, columna, x, z); //3.1
@@ -753,7 +792,8 @@ public class AppCiudad {
 
     private String vertexShader() {
         return """
-            #version 330 core  // Seleccionamos GLSL 3.30
+            #version 330 core 
+             // Seleccionamos GLSL 3.30
             layout (location = 0) in vec3 aPos; // Leemos la posicion local del vertice desde el VBO
             layout (location = 1) in vec3 aNormal; // Leemos la normla de la cara desde el mismo VBO
             uniform vec3 uPos;                          // Recibe el centro de la caja de la ciudad
