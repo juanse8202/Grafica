@@ -415,20 +415,6 @@ public class GestorPersonas {
         return new RutaParque(coordenadas, crucesRuta.toArray(new CrucePeatonal[0]));
     }
 
-    private void agregarPunto(List<PuntoRuta> puntos, List<CrucePeatonal> crucesRuta,
-            PuntoRuta punto, CrucePeatonal cruce) {
-        if (!puntos.isEmpty()) {
-            PuntoRuta anterior = puntos.get(puntos.size() - 1);
-            if (Math.abs(anterior.x - punto.x) < 0.01f
-                    && Math.abs(anterior.z - punto.z) < 0.01f) {
-                if (cruce != null) crucesRuta.set(crucesRuta.size() - 1, cruce);
-                return;
-            }
-        }
-        puntos.add(punto);
-        crucesRuta.add(cruce);
-    }
-
     private CrucePeatonal cruceEnCalzada(PuntoRuta punto) {
         int columna = (int) Math.floor((punto.x + limiteCiudad) / tamanoCelda);
         int fila = (int) Math.floor((punto.z + limiteCiudad) / tamanoCelda);
