@@ -43,16 +43,22 @@ public class GestorTrafico {
             boolean semaforo = debeDetenerseEnSemaforo(automovil);
             boolean peaton = debeDetenerseAntePeaton(automovil, peatones);
             boolean otroAuto = debeDetenerseAnteOtroAuto(automovil);
+            boolean autoALaIzquierda = debeCederAnteAutoALaIzquierda(automovil);
             boolean jugadorBloquea = debeDetenerseAnteJugador(automovil);
 
             if (automovil.estaEsquivando()) {
-                if (!semaforo && !peaton && !otroAuto) automovil.actualizar(deltaTime);
+                if (!semaforo && !peaton && !otroAuto && !autoALaIzquierda && !jugadorBloquea) {
+                    automovil.actualizar(deltaTime);
+                    automovil.setVelocidad(automovil.getVelocidadRuta());
+                } else {
+                    automovil.setVelocidad(0.0f);
+                }
                 continue;
             }
 
             // Un auto abandonado se rodea tras una breve espera, solo si el carril
             // lateral y la zona de reincorporacion estan libres.
-            if (!semaforo && !peaton && jugadorBloquea
+            if (!semaforo && !peaton && !otroAuto && !autoALaIzquierda && jugadorBloquea
                     && automovilJugador.getConductor() == null
                     && Math.abs(automovilJugador.getVelocidad()) < 0.25f) {
                 float espera = tiempoBloqueadoPorJugador.getOrDefault(automovil, 0.0f) + deltaTime;
@@ -66,16 +72,23 @@ public class GestorTrafico {
                                         automovilJugador.getX(), automovilJugador.getZ())) {
                             tiempoBloqueadoPorJugador.remove(automovil);
                             automovil.actualizar(deltaTime);
+                            automovil.setVelocidad(automovil.getVelocidadRuta());
                             break;
                         }
                     }
+                    if (!automovil.estaEsquivando()) automovil.setVelocidad(0.0f);
+                } else {
+                    automovil.setVelocidad(0.0f);
                 }
                 continue;
             }
 
             tiempoBloqueadoPorJugador.remove(automovil);
-            if (!semaforo && !peaton && !otroAuto && !jugadorBloquea) {
+            if (!semaforo && !peaton && !otroAuto && !autoALaIzquierda && !jugadorBloquea) {
                 automovil.actualizar(deltaTime);
+                automovil.setVelocidad(automovil.getVelocidadRuta());
+            } else {
+                automovil.setVelocidad(0.0f);
             }
         }
     }
@@ -175,6 +188,53 @@ public class GestorTrafico {
             float adelante = dx * frenteX + dz * frenteZ;
             float lateral = Math.abs(dx * frenteZ - dz * frenteX);
             if (adelante > 0.0f && adelante < 3.4f && lateral < 1.35f) return true;
+        }
+        return false;
+    }
+
+    /** Cede cuando una trayectoria de conflicto se aproxima desde el lado izquierdo. */
+    private boolean debeCederAnteAutoALaIzquierda(Automovil auto) {
+        float frenteX = -(float) Math.sin(auto.getAngulo());
+        float frenteZ = -(float) Math.cos(auto.getAngulo());
+        float izquierdaX = frenteZ;
+        float izquierdaZ = -frenteX;
+        float velocidadAuto = Math.max(0.0f, auto.getVelocidad());
+
+        for (Automovil otro : automoviles) {
+            if (otro == auto || otro.getVelocidad() < 0.05f) continue;
+
+            float diferenciaX = otro.getXCarril() - auto.getXCarril();
+            float diferenciaZ = otro.getZCarril() - auto.getZCarril();
+            if (diferenciaX * diferenciaX + diferenciaZ * diferenciaZ > 18.0f * 18.0f) continue;
+
+            float adelantePropio = diferenciaX * frenteX + diferenciaZ * frenteZ;
+            float aLaIzquierda = diferenciaX * izquierdaX + diferenciaZ * izquierdaZ;
+            if (adelantePropio < -2.0f || adelantePropio > 14.0f || aLaIzquierda <= 0.0f) continue;
+
+            float otroFrenteX = -(float) Math.sin(otro.getAngulo());
+            float otroFrenteZ = -(float) Math.cos(otro.getAngulo());
+            float alineacion = frenteX * otroFrenteX + frenteZ * otroFrenteZ;
+            // El seguimiento y el trafico en sentidos opuestos tienen reglas propias.
+            if (Math.abs(alineacion) > 0.85f) continue;
+            float adelanteOtro = -diferenciaX * otroFrenteX - diferenciaZ * otroFrenteZ;
+            if (adelanteOtro < -2.0f || adelanteOtro > 14.0f) continue;
+
+            float velocidadOtro = Math.max(0.0f, otro.getVelocidad());
+            float velocidadRelativaX = otroFrenteX * velocidadOtro - frenteX * velocidadAuto;
+            float velocidadRelativaZ = otroFrenteZ * velocidadOtro - frenteZ * velocidadAuto;
+            float velocidadRelativaCuadrada = velocidadRelativaX * velocidadRelativaX
+                    + velocidadRelativaZ * velocidadRelativaZ;
+            if (velocidadRelativaCuadrada < 0.01f) continue;
+
+            float tiempoEncuentro = -(diferenciaX * velocidadRelativaX
+                    + diferenciaZ * velocidadRelativaZ) / velocidadRelativaCuadrada;
+            if (tiempoEncuentro < 0.0f || tiempoEncuentro > 2.5f) continue;
+
+            float separacionX = diferenciaX + velocidadRelativaX * tiempoEncuentro;
+            float separacionZ = diferenciaZ + velocidadRelativaZ * tiempoEncuentro;
+            if (separacionX * separacionX + separacionZ * separacionZ < 3.4f * 3.4f) {
+                return true;
+            }
         }
         return false;
     }

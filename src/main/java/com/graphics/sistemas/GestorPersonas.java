@@ -265,7 +265,7 @@ public class GestorPersonas {
             Persona mujer = nuevaPersonaParque(centro, colores[(pareja + 3) % colores.length], TipoPersona.MUJER);
             peatones.add(hombre);
             peatones.add(mujer);
-            paseosParque.add(new PaseoParque(parques, limiteCiudad, tamanoCelda,
+            paseosParque.add(new PaseoParque(parques,
                     parque, lateral, new Persona[]{hombre, mujer},
                     new float[]{0.0f, 0.86f}, pareja, rutas));
         }
@@ -278,7 +278,7 @@ public class GestorPersonas {
             Persona persona = nuevaPersonaParque(centro, colores[(sola + 5) % colores.length],
                     sola % 2 == 0 ? TipoPersona.HOMBRE : TipoPersona.MUJER);
             peatones.add(persona);
-            paseosParque.add(new PaseoParque(parques, limiteCiudad, tamanoCelda,
+            paseosParque.add(new PaseoParque(parques,
                     parque, lateral, new Persona[]{persona}, new float[]{0.0f}, sola + 10,
                     rutas));
         }
@@ -671,8 +671,6 @@ public class GestorPersonas {
     /** Grupo que pasea por un parque, descansa en un banco y luego retoma el paseo. */
     private static final class PaseoParque {
         private final float[][] parques;
-        private final float limite;
-        private final float celda;
         private final Persona[] personas;
         private final float[] desplazamientos;
         private final float velocidad;
@@ -686,12 +684,9 @@ public class GestorPersonas {
         private float tiempoSentado;
         private boolean viajandoAParque;
 
-        private PaseoParque(float[][] parques, float limite, float celda,
-                int indiceParque, float lateral, Persona[] personas,
+        private PaseoParque(float[][] parques, int indiceParque, float lateral, Persona[] personas,
                 float[] desplazamientos, int semilla, RutaParque[] rutasInterParque) {
             this.parques = parques;
-            this.limite = limite;
-            this.celda = celda;
             this.parqueInicial = indiceParque;
             this.indiceParque = indiceParque;
             this.rutasInterParque = rutasInterParque;

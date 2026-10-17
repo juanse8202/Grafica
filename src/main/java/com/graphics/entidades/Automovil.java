@@ -8,8 +8,10 @@ import java.util.List;
  * El renderizado OpenGL se conserva en SimuladorCiudad.
  */
 public class Automovil {
-    private static final int PUNTOS_POR_GIRO = 24;
-    private static final float RADIO_MAXIMO_GIRO = 2.4f;
+    private static final int PUNTOS_POR_GIRO = 32;
+    // Los autos circulan desplazados 2 m del centro de la ruta. Un radio
+    // menor dejaba la trayectoria interior casi sin curva y parecia un pivote.
+    private static final float RADIO_MAXIMO_GIRO = 5.0f;
     private final float[][] ruta;
     private final float velocidadRuta;
     private float velocidad;
@@ -132,6 +134,7 @@ public class Automovil {
     public float getXCarril() { return x + (float) Math.cos(angulo) * 2.0f; }
     public float getZCarril() { return z - (float) Math.sin(angulo) * 2.0f; }
     public float getVelocidad() { return velocidad; }
+    public float getVelocidadRuta() { return velocidadRuta; }
     public void setVelocidad(float velocidad) { this.velocidad = velocidad; }
     public void setPosicion(float x, float z) { this.x = x; this.z = z; }
     public void setAngulo(float angulo) { this.angulo = angulo; }
@@ -152,6 +155,7 @@ public class Automovil {
     public void reiniciar() {
         x = xInicial;
         z = zInicial;
+        velocidad = velocidadRuta;
         siguientePunto = 1;
         rutaEvasion = null;
         siguientePuntoEvasion = 0;
@@ -247,47 +251,67 @@ public class Automovil {
             actualizarEvasion(deltaTime);
             return;
         }
-        float destinoX = ruta[siguientePunto][0];
-        float destinoZ = ruta[siguientePunto][1];
+        float avanceRestante = velocidadRuta * deltaTime;
+        int puntosRecorridos = 0;
+        while (avanceRestante > 0.0001f && puntosRecorridos < ruta.length) {
+            float destinoX = ruta[siguientePunto][0];
+            float destinoZ = ruta[siguientePunto][1];
+            float dx = destinoX - x;
+            float dz = destinoZ - z;
+            float distancia = (float) Math.hypot(dx, dz);
+            if (distancia < 0.0001f) {
+                siguientePunto = (siguientePunto + 1) % ruta.length;
+                puntosRecorridos++;
+                continue;
+            }
 
-        float dx = destinoX - x;
-        float dz = destinoZ - z;
-        float distancia = (float) Math.sqrt(dx * dx + dz * dz);
-        float avance = velocidadRuta * deltaTime;
-
-        if (distancia <= avance) {
-            x = destinoX;
-            z = destinoZ;
-            siguientePunto = (siguientePunto + 1) % ruta.length;
-            actualizarOrientacion();
-            return;
+            angulo = (float) Math.atan2(-dx, -dz);
+            if (distancia <= avanceRestante) {
+                x = destinoX;
+                z = destinoZ;
+                avanceRestante -= distancia;
+                siguientePunto = (siguientePunto + 1) % ruta.length;
+                puntosRecorridos++;
+            } else {
+                x += dx / distancia * avanceRestante;
+                z += dz / distancia * avanceRestante;
+                avanceRestante = 0.0f;
+            }
         }
-
-        x += dx / distancia * avance;
-        z += dz / distancia * avance;
-        angulo = (float) Math.atan2(-dx, -dz);
     }
 
     private void actualizarEvasion(float deltaTime) {
-        float destinoX = rutaEvasion[siguientePuntoEvasion][0];
-        float destinoZ = rutaEvasion[siguientePuntoEvasion][1];
-        float dx = destinoX - x;
-        float dz = destinoZ - z;
-        float distancia = (float) Math.sqrt(dx * dx + dz * dz);
-        float avance = velocidadRuta * deltaTime;
-        if (distancia <= avance || distancia < 0.05f) {
-            x = destinoX;
-            z = destinoZ;
-            siguientePuntoEvasion++;
+        float avanceRestante = velocidadRuta * deltaTime;
+        int puntosRecorridos = 0;
+        while (rutaEvasion != null && avanceRestante > 0.0001f
+                && puntosRecorridos < rutaEvasion.length) {
+            float destinoX = rutaEvasion[siguientePuntoEvasion][0];
+            float destinoZ = rutaEvasion[siguientePuntoEvasion][1];
+            float dx = destinoX - x;
+            float dz = destinoZ - z;
+            float distancia = (float) Math.hypot(dx, dz);
+            if (distancia < 0.0001f) {
+                siguientePuntoEvasion++;
+                puntosRecorridos++;
+            } else {
+                angulo = (float) Math.atan2(-dx, -dz);
+                if (distancia <= avanceRestante) {
+                    x = destinoX;
+                    z = destinoZ;
+                    avanceRestante -= distancia;
+                    siguientePuntoEvasion++;
+                    puntosRecorridos++;
+                } else {
+                    x += dx / distancia * avanceRestante;
+                    z += dz / distancia * avanceRestante;
+                    avanceRestante = 0.0f;
+                }
+            }
+
             if (siguientePuntoEvasion >= rutaEvasion.length) {
                 rutaEvasion = null;
                 actualizarOrientacion();
-                return;
             }
-        } else {
-            x += dx / distancia * avance;
-            z += dz / distancia * avance;
-            angulo = (float) Math.atan2(-dx, -dz);
         }
     }
 
