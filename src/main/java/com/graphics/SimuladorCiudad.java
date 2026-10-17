@@ -1,6 +1,8 @@
 package com.graphics;
 
 import com.graphics.entidades.Automovil;
+import com.graphics.entidades.Chata;
+import com.graphics.entidades.Huella;
 import com.graphics.entidades.EstadoPersona;
 import com.graphics.entidades.Persona;
 import com.graphics.entidades.TipoPersona;
@@ -12,6 +14,7 @@ import static org.lwjgl.opengl.GL33.*;
 
 public class SimuladorCiudad extends AppCiudad {
     private Automovil automovilJugador;
+    private final Chata chata;
     private Persona personaJugador;
     private ControlJugador controlJugador;
     private GestorPersonas gestorPersonas;
@@ -55,7 +58,9 @@ public class SimuladorCiudad extends AppCiudad {
         // El jugador es una sola persona que puede conducir su propio auto.
         automovilJugador = new Automovil(new float[][]{{0.0f, 0.0f}, {0.0f, -1.0f}},
                 0.0f, 0.95f, 0.24f, 0.12f);
+        chata = new Chata(automovilJugador);
         gestorTrafico.setAutomovilJugador(automovilJugador);
+        gestorTrafico.setChataJugador(chata);
         personaJugador = new Persona(0.0f, 0.0f, 0.0f, 0.0f,
                 0.90f, 0.72f, 0.52f, true, EstadoPersona.CONDUCIENDO);
         controlJugador = new ControlJugador(personaJugador, automovilJugador);
@@ -186,6 +191,7 @@ public class SimuladorCiudad extends AppCiudad {
 
     private void reiniciar() {
         controlJugador.reiniciar();
+        chata.reiniciar();
 
         cameraArea = false;  // Camara para primera y tercera persona punto 3.5
         orbita = 0.6f;  // Camara para primera y tercera persona punto 3.5
@@ -274,9 +280,7 @@ public class SimuladorCiudad extends AppCiudad {
         float siguienteX = automovilJugador.getX() + frenteX * velocidad * deltaTime;
         float siguienteZ = automovilJugador.getZ() + frenteZ * velocidad * deltaTime;
 
-        if (puedeCircular(siguienteX, siguienteZ, angulo)) {
-            automovilJugador.setAngulo(angulo);
-            automovilJugador.setPosicion(siguienteX, siguienteZ);
+        if (moverAutomovilConChata(siguienteX, siguienteZ, angulo)) {
             automovilJugador.setVelocidad(velocidad);
         } else {
             automovilJugador.setVelocidad(0.0f);
@@ -296,16 +300,96 @@ public class SimuladorCiudad extends AppCiudad {
         float frenteZ = -(float) Math.cos(automovilJugador.getAngulo());
         float siguienteX = automovilJugador.getX() + frenteX * velocidad * deltaTime;
         float siguienteZ = automovilJugador.getZ() + frenteZ * velocidad * deltaTime;
-        if (puedeCircular(siguienteX, siguienteZ, automovilJugador.getAngulo())) {
-            automovilJugador.setPosicion(siguienteX, siguienteZ);
+        if (moverAutomovilConChata(siguienteX, siguienteZ, automovilJugador.getAngulo())) {
             automovilJugador.setVelocidad(velocidad);
         } else {
             automovilJugador.setVelocidad(0.0f);
         }
     }
 
+    /** Valida y confirma auto y remolque juntos, incluidos los arcos del giro. */
+    boolean moverAutomovilConChata(float x, float z, float angulo) {
+        float xInicial = automovilJugador.getX();
+        float zInicial = automovilJugador.getZ();
+        float anguloInicial = automovilJugador.getAngulo();
+        float giro = Chata.normalizarAngulo(angulo - anguloInicial);
+        int pasos = Math.max(1, Math.max((int) Math.ceil(Math.hypot(x - xInicial, z - zInicial) / 0.10),
+                (int) Math.ceil(Math.abs(giro) / Math.toRadians(2))));
+        for (int i = 1; i <= pasos; i++) {
+            float t = i / (float) pasos;
+            float siguienteX = xInicial + (x - xInicial) * t;
+            float siguienteZ = zInicial + (z - zInicial) * t;
+            float siguienteAngulo = anguloInicial + giro * t;
+            Chata.Estado propuesta = chata.predecir(siguienteX, siguienteZ, siguienteAngulo);
+            if (!puedeCircular(siguienteX, siguienteZ, siguienteAngulo)
+                    || !puedeCircularChata(propuesta, siguienteX, siguienteZ, siguienteAngulo)) {
+                return false;
+            }
+            automovilJugador.setPosicion(siguienteX, siguienteZ);
+            automovilJugador.setAngulo(siguienteAngulo);
+            chata.confirmar(propuesta);
+        }
+        return true;
+    }
+
+    private boolean empeoraContacto(Huella propuesta, Huella actual, Huella obstaculo) {
+        float nuevo = propuesta.solapamientoCon(obstaculo);
+        float previo = actual.solapamientoCon(obstaculo);
+        return nuevo > 0.00001f && (previo <= 0.0f || nuevo >= previo - 0.00001f);
+    }
+
+    private boolean puedeCircularChata(Chata.Estado propuesta, float autoX, float autoZ, float anguloAuto) {
+        java.util.List<Huella> nuevas = chata.getHuellas(propuesta);
+        java.util.List<Huella> actuales = chata.getHuellas(chata.getEstado());
+        Huella autoPropio = new Huella(autoX, autoZ, anguloAuto, 1.05f, 1.35f);
+        for (int i = 0; i < nuevas.size(); i++) {
+            Huella nueva = nuevas.get(i);
+            Huella actual = actuales.get(i);
+            if (Math.abs(nueva.x()) + nueva.radioEnEje(1, 0) > LIMITE
+                    || Math.abs(nueva.z()) + nueva.radioEnEje(0, 1) > LIMITE) {
+                motivoBloqueo = "chata en el limite de la ciudad";
+                return false;
+            }
+            // La barra termina en el enganche; la caja y las ruedas no pueden plegarse sobre el auto.
+            if (i < 3 && nueva.solapamientoCon(autoPropio) > 0.001f) {
+                motivoBloqueo = "angulo de la chata";
+                return false;
+            }
+            for (int fila = 0; fila < MAPA.length; fila++) {
+                for (int columna = 0; columna < MAPA[fila].length; columna++) {
+                    if (MAPA[fila][columna] == 0) continue;
+                    Huella celda = new Huella(centro(columna), centro(fila), 0, 5, 5);
+                    if (empeoraContacto(nueva, actual, celda)) {
+                        motivoBloqueo = "chata junto a " + (MAPA[fila][columna] == 1 ? "acera" : "parque");
+                        return false;
+                    }
+                }
+            }
+            for (Automovil auto : gestorTrafico.getAutomoviles()) {
+                Huella otro = new Huella(auto.getXCarril(), auto.getZCarril(), auto.getAngulo(), 0.92f, 1.20f);
+                if (empeoraContacto(nueva, actual, otro)) {
+                    motivoBloqueo = "chata contra auto " + identificarColorAuto(auto);
+                    return false;
+                }
+            }
+            for (Persona persona : gestorPersonas.getPeatones()) {
+                if (empeoraContacto(nueva, actual, new Huella(persona.getX(), persona.getZ(), 0, 0.22f, 0.22f))) {
+                    motivoBloqueo = "peaton junto a la chata";
+                    return false;
+                }
+            }
+            if (!controlJugador.estaConduciendo() && empeoraContacto(nueva, actual,
+                    new Huella(personaJugador.getX(), personaJugador.getZ(), 0, 0.22f, 0.22f))) {
+                motivoBloqueo = "jugador junto a la chata";
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** Valida el terreno donde puede caminar el jugador y evita autos cercanos. */
     private boolean puedeCaminar(float x, float z) {
+        if (chata.contiene(x, z, 0.32f)) return false;
         if (Math.abs(x) > LIMITE - 0.6f || Math.abs(z) > LIMITE - 0.6f) {
             return false;
         }
@@ -623,20 +707,20 @@ public class SimuladorCiudad extends AppCiudad {
             if (puntoDentroDeAuto(x, z, auto.getXCarril(), auto.getZCarril(),
                     auto.getAngulo(), false)) return true;
         }
-        return puntoDentroDeAuto(x, z, automovilJugador.getX(), automovilJugador.getZ(),
-                automovilJugador.getAngulo(), true);
+        return chata.contiene(x, z, 0.32f)
+                || puntoDentroDeAuto(x, z, automovilJugador.getX(), automovilJugador.getZ(),
+                        automovilJugador.getAngulo(), true);
     }
 
     private double distanciaVehiculoMasCercano(float x, float z) {
-        double distanciaMinima = Double.POSITIVE_INFINITY;
+        double distanciaMinima = chata.distanciaFirmada(x, z);
         for (Automovil auto : gestorTrafico.getAutomoviles()) {
-            double dx = x - auto.getXCarril();
-            double dz = z - auto.getZCarril();
-            distanciaMinima = Math.min(distanciaMinima, Math.hypot(dx, dz));
+            Huella huella = new Huella(auto.getXCarril(), auto.getZCarril(), auto.getAngulo(), 0.73f, 1.18f);
+            distanciaMinima = Math.min(distanciaMinima, huella.distanciaFirmada(x, z));
         }
-        double dx = x - automovilJugador.getX();
-        double dz = z - automovilJugador.getZ();
-        return Math.min(distanciaMinima, Math.hypot(dx, dz));
+        Huella auto = new Huella(automovilJugador.getX(), automovilJugador.getZ(),
+                automovilJugador.getAngulo(), 1.05f, 1.35f);
+        return Math.min(distanciaMinima, auto.distanciaFirmada(x, z));
     }
 
     private boolean puntoDentroDeAuto(float x, float z, float autoX, float autoZ,
@@ -769,6 +853,9 @@ public class SimuladorCiudad extends AppCiudad {
 
         dibujarDestinoActual();
         dibujarAuto();
+
+        dibujarChata();
+
         if (controlJugador.estaConduciendo()) {
             dibujarConductor(automovilJugador, automovilJugador.getX(), automovilJugador.getZ());
         } else {
@@ -810,6 +897,70 @@ public class SimuladorCiudad extends AppCiudad {
 
             // Luz trasera. //2.3
             //pieza(x, 0.68f, 1.32f, 0.35f, 0.17f, 0.07f, 0.85f, 0.05f, 0.05f); //2.3
+        }
+    }
+
+
+    private void dibujarChata() {
+        // Coordenadas locales del remolque; el origen esta en su eje de ruedas.
+        float centroZ = 0.0f;
+
+        // Palito de enganche: une la parte trasera del auto con la chata.
+        piezaChata(0, 0.48f, Chata.CENTRO_BARRA,
+                0.12f, 0.12f, Chata.LARGO_BARRA,
+                0.16f, 0.16f, 0.18f);
+        Chata.Estado posicion = chata.getEstado();
+        cajaGirada(posicion.engancheX(), 0.48f, posicion.engancheZ(),
+                0.18f, 0.16f, 0.18f, 0.25f, 0.25f, 0.27f, posicion.angulo());
+
+        // Chasis.
+        piezaChata(0, 0.47f, centroZ,
+                1.22f, 0.12f, 1.70f,
+                0.15f, 0.15f, 0.17f);
+
+        // Piso de madera.
+        piezaChata(0, 0.58f, centroZ,
+                1.30f, 0.10f, 1.70f,
+                0.55f, 0.34f, 0.17f);
+
+        // Tres tablas por pared: cajita abierta por arriba.
+        for (int fila = 0; fila < 3; fila++) {
+            float altura = 0.72f + fila * 0.18f;
+
+            // Paredes laterales.
+            for (float lado : new float[]{-0.61f, 0.61f}) {
+                piezaChata(lado, altura, centroZ,
+                        0.08f, 0.14f, 1.70f,
+                        0.65f, 0.43f, 0.24f);
+            }
+
+            // Pared delantera y trasera.
+            for (float extremo : new float[]{-0.80f, 0.80f}) {
+                piezaChata(0, altura, centroZ + extremo,
+                        1.30f, 0.14f, 0.10f,
+                        0.65f, 0.43f, 0.24f);
+            }
+        }
+
+        // Postes metalicos en las cuatro esquinas.
+        for (float lado : new float[]{-0.62f, 0.62f}) {
+            for (float extremo : new float[]{-0.81f, 0.81f}) {
+                piezaChata(lado, 0.86f, centroZ + extremo,
+                        0.08f, 0.60f, 0.08f,
+                        0.12f, 0.12f, 0.14f);
+            }
+        }
+
+        // Eje que conecta las dos ruedas.
+        piezaChata(0, 0.30f, centroZ,
+                1.48f, 0.08f, 0.08f,
+                0.20f, 0.20f, 0.22f);
+
+        // Dos ruedas, hechas con cajas como las de tu auto.
+        for (float lado : new float[]{-0.73f, 0.73f}) {
+            piezaChata(lado, 0.30f, centroZ,
+                    0.20f, 0.48f, 0.50f,
+                    0.05f, 0.05f, 0.05f);
         }
     }
 
@@ -1036,6 +1187,13 @@ public class SimuladorCiudad extends AppCiudad {
         float mundoX = automovilJugador.getX() + coseno * x + seno * z;
         float mundoZ = automovilJugador.getZ() - seno * x + coseno * z;
         cajaGirada(mundoX, y, mundoZ, sx, sy, sz, r, g, b, angulo);
+    }
+
+    private void piezaChata(float x, float y, float z, float sx, float sy, float sz,
+            float r, float g, float b) {
+        Chata.Estado posicion = chata.getEstado();
+        cajaGirada(Chata.mundoX(posicion, x, z), y, Chata.mundoZ(posicion, x, z),
+                sx, sy, sz, r, g, b, posicion.angulo());
     }
 
     public static void main(String[] args) {

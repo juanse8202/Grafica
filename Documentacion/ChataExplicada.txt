@@ -1,0 +1,617 @@
+CODIGO DE LA CHATA Y EXPLICACION PARA EXPONER
+==========================================
+
+Este documento reune las dos clases completas y los fragmentos que las conectan
+con el proyecto actual. Los comentarios explican las instrucciones. No es una
+clase Java unica: cada bloque pertenece al archivo indicado y ya esta integrado
+en el proyecto. No hay que pegar todos los bloques en SimuladorCiudad.java.
+
+COMO PRESENTAR LA IDEA
+
+"La chata tiene un estado propio: posicion, orientacion y punto de enganche.
+Cuando el auto avanza, calculo donde quedaria el enganche. Uso la posicion
+anterior del eje de ruedas para obtener el nuevo angulo del remolque, y mantengo
+constante la distancia entre el eje y el enganche. Antes de aplicar el movimiento
+compruebo las colisiones. Finalmente dibujo las piezas con el angulo de la chata."
+
+Convenciones utilizadas:
+- X: desplazamiento horizontal en el terreno.
+- Y: altura; solo se necesita al dibujar esta simulacion sobre un suelo plano.
+- Z: la otra direccion horizontal del terreno.
+- En coordenadas locales, -Z apunta al frente y +Z hacia atras.
+- El origen local de la chata esta en el centro de su eje de ruedas.
+- Los angulos de las funciones trigonometricas estan en radianes.
+- 180 grados equivalen a PI radianes, aproximadamente 3.14159.
+- La letra f indica un literal float. Math.sin y Math.cos devuelven double;
+  el prefijo (float) convierte ese resultado al tipo utilizado por el proyecto.
+- Las llaves { } delimitan clases, metodos, condiciones y bucles.
+- El punto y coma termina una instruccion. Los comentarios // no se ejecutan.
+- private: uso interno. public: accesible desde otras clases.
+- static: pertenece a la clase. final: no se puede reasignar esa referencia o valor.
+
+1. ARCHIVO COMPLETO: src/main/java/com/graphics/entidades/Chata.java
+
+package com.graphics.entidades; // Ubica la clase en el paquete de entidades.
+
+import java.util.List; // Permite guardar las zonas de colision en una lista.
+
+public final class Chata { // Declara la entidad; final impide crear subclases.
+    // Distancia del centro del auto hasta el enganche situado en su parte trasera.
+    public static final float ENGANCHE_AUTO = 1.35f;
+
+    // Longitud fija entre el enganche y el eje de ruedas de la chata.
+    public static final float DISTANCIA_EJE_ENGANCHE = 1.65f;
+
+    // Mitad del largo de la caja: la caja completa mide 1.70 unidades.
+    public static final float SEMILARGO_CAJA = 0.85f;
+
+    // La barra ocupa el espacio entre el frente de la caja y el enganche: 0.80.
+    public static final float LARGO_BARRA = DISTANCIA_EJE_ENGANCHE - SEMILARGO_CAJA;
+
+    // Centro local de la barra: -(1.65 + 0.85) / 2 = -1.25, hacia el auto.
+    public static final float CENTRO_BARRA = -(DISTANCIA_EJE_ENGANCHE + SEMILARGO_CAJA) * 0.5f;
+
+    // Convierte 60 grados a radianes para limitar el angulo relativo.
+    // Las colisiones con el propio auto pueden detener el giro antes de este limite.
+    public static final float ANGULO_MAXIMO = (float) Math.toRadians(60);
+
+    // Datos inmutables de una posicion: centro del eje, angulo y punto de enganche.
+    // record genera el constructor, los accesores x(), z(), angulo(), etc.,
+    // ademas de equals, hashCode y toString. No genera setters.
+    public record Estado(float x, float z, float angulo, float engancheX, float engancheZ) {}
+
+    private final Automovil automovil; // Referencia al auto que tira del remolque.
+    private Estado estado; // Posicion y orientacion actualmente confirmadas.
+    private List<Huella> huellas; // Cache de las zonas de colision del estado actual.
+
+    public Chata(Automovil automovil) { // Constructor: recibe el auto propietario.
+        this.automovil = automovil; // Guarda la referencia; this distingue el campo del parametro.
+        reiniciar(); // Coloca inicialmente la chata alineada detras del auto.
+    }
+
+    public Estado getEstado() { return estado; } // Permite consultar el estado actual.
+
+    public void confirmar(Estado siguiente) { // Aplica una propuesta ya validada.
+        estado = siguiente; // Sustituye el estado anterior por el nuevo.
+        huellas = null; // Descarta la cache: las huellas deben corresponder a la nueva posicion.
+    }
+
+    public void reiniciar() { // Realinea la chata al crearla o reiniciar la partida.
+        float angulo = automovil.getAngulo(); // Consulta la orientacion del auto.
+        float seno = (float) Math.sin(angulo); // Componente X de su direccion hacia atras.
+        float coseno = (float) Math.cos(angulo); // Componente Z de su direccion hacia atras.
+        float engancheX = automovil.getX() + seno * ENGANCHE_AUTO; // X del enganche trasero.
+        float engancheZ = automovil.getZ() + coseno * ENGANCHE_AUTO; // Z del enganche trasero.
+        // Desde el enganche retrocede 1.65 unidades hasta el centro del eje.
+        confirmar(new Estado(engancheX + seno * DISTANCIA_EJE_ENGANCHE,
+                engancheZ + coseno * DISTANCIA_EJE_ENGANCHE, angulo, engancheX, engancheZ));
+    }
+
+    // Calcula una propuesta sin cambiar todavia el estado confirmado.
+    public Estado predecir(float autoX, float autoZ, float anguloAuto) {
+        float engancheX = autoX + (float) Math.sin(anguloAuto) * ENGANCHE_AUTO; // Nuevo enganche X.
+        float engancheZ = autoZ + (float) Math.cos(anguloAuto) * ENGANCHE_AUTO; // Nuevo enganche Z.
+        float dx = estado.x - engancheX; // Diferencia X desde el nuevo enganche al eje anterior.
+        float dz = estado.z - engancheZ; // Diferencia Z desde el nuevo enganche al eje anterior.
+
+        // hypot calcula sqrt(dx*dx + dz*dz), la longitud del vector.
+        // Si casi no existe vector, conserva el angulo anterior.
+        // En otro caso atan2(dx, dz) obtiene la orientacion hacia el eje anterior.
+        // Se usa este orden porque el vector hacia atras se expresa como (sin(a), cos(a)).
+        float angulo = Math.hypot(dx, dz) < 0.00001 ? estado.angulo : (float) Math.atan2(dx, dz);
+
+        // Diferencia angular entre remolque y auto, expresada sin vueltas completas.
+        float articulacion = normalizarAngulo(angulo - anguloAuto);
+        // Math.min limita por arriba; Math.max limita por abajo: entre -60 y +60 grados.
+        articulacion = Math.max(-ANGULO_MAXIMO, Math.min(ANGULO_MAXIMO, articulacion));
+        // Suma el angulo relativo al angulo del auto para recuperar el angulo de la chata.
+        angulo = normalizarAngulo(anguloAuto + articulacion);
+
+        // Coloca el nuevo eje a 1.65 unidades del enganche con ese angulo.
+        // Mantener esta longitud impide que la barra se estire o se despegue.
+        return new Estado(engancheX + (float) Math.sin(angulo) * DISTANCIA_EJE_ENGANCHE,
+                engancheZ + (float) Math.cos(angulo) * DISTANCIA_EJE_ENGANCHE,
+                angulo, engancheX, engancheZ);
+    }
+
+    public static float normalizarAngulo(float angulo) { // Utilidad sin depender de una instancia.
+        // Devuelve el angulo equivalente en el intervalo aproximado [-PI, PI].
+        // Ejemplo: 370 grados y 10 grados representan la misma orientacion.
+        return (float) Math.atan2(Math.sin(angulo), Math.cos(angulo));
+    }
+
+    public static float mundoX(Estado estado, float x, float z) { // Convierte un punto local a X global.
+        // Primero rota el desplazamiento local; despues suma el centro de la chata.
+        return estado.x + (float) Math.cos(estado.angulo) * x + (float) Math.sin(estado.angulo) * z;
+    }
+
+    public static float mundoZ(Estado estado, float x, float z) { // Convierte el mismo punto a Z global.
+        // El signo menos corresponde al convenio de giro empleado en SimuladorCiudad.
+        return estado.z - (float) Math.sin(estado.angulo) * x + (float) Math.cos(estado.angulo) * z;
+    }
+
+    public List<Huella> getHuellas(Estado posicion) { // Obtiene los rectangulos de colision de un estado.
+        // Si es el mismo objeto de estado y ya hay cache, evita volver a calcularla.
+        if (posicion == estado && huellas != null) return huellas;
+        // List.of crea una lista que no admite agregar ni quitar elementos.
+        List<Huella> resultado = List.of(
+                // Caja: centro en el eje, semiancho 0.65 y semilargo 0.85.
+                new Huella(posicion.x, posicion.z, posicion.angulo, 0.65f, SEMILARGO_CAJA),
+                // Rueda de un lado: ancho 0.20 y largo 0.50.
+                huellaLocal(posicion, -0.73f, 0, 0.10f, 0.25f),
+                // Rueda del lado opuesto, con el mismo tamano.
+                huellaLocal(posicion, 0.73f, 0, 0.10f, 0.25f),
+                // Barra: ancho 0.12 y largo 0.80, colocada delante del eje.
+                huellaLocal(posicion, 0, CENTRO_BARRA, 0.06f, LARGO_BARRA * 0.5f));
+        if (posicion == estado) huellas = resultado; // Guarda solo la cache del estado confirmado.
+        return resultado; // Entrega las cuatro huellas.
+    }
+
+    // Crea una huella a partir de una posicion local dentro de la chata.
+    private Huella huellaLocal(Estado posicion, float x, float z, float semiancho, float semilargo) {
+        // Convierte el centro a coordenadas globales y utiliza el angulo del remolque.
+        return new Huella(mundoX(posicion, x, z), mundoZ(posicion, x, z),
+                posicion.angulo, semiancho, semilargo);
+    }
+
+    public boolean contiene(float x, float z, float margen) { // Pregunta si un punto ocupa la chata.
+        for (Huella huella : getHuellas(estado)) { // Revisa caja, ruedas y barra.
+            if (huella.contiene(x, z, margen)) return true; // Una coincidencia basta.
+        }
+        return false; // El punto no pertenece a ninguna pieza.
+    }
+
+    public double distanciaFirmada(float x, float z) { // Consulta la cercania del punto a las piezas.
+        double distancia = Double.POSITIVE_INFINITY; // Comienza con un valor mayor que cualquier distancia.
+        for (Huella huella : getHuellas(estado)) { // Examina cada rectangulo.
+            distancia = Math.min(distancia, huella.distanciaFirmada(x, z)); // Conserva el menor valor.
+        }
+        return distancia; // Negativo dentro de alguna pieza, positivo fuera de todas.
+    }
+}
+
+POR QUE LA CHATA GIRA CON RETRASO
+
+El nuevo angulo se calcula con el enganche nuevo y el eje ANTERIOR. No se copia
+simplemente automovil.getAngulo(). Por eso el remolque forma un angulo respecto
+al auto. Es una aproximacion cinematica: no se simulan masa, fuerzas ni rebotes.
+Al avanzar recto, las sucesivas posiciones van alineando la chata con el auto.
+
+NORMALIZARANGULO, EXPLICADO APARTE
+
+La seleccion del IDE corresponde a esta llamada:
+    float giro = Chata.normalizarAngulo(angulo - anguloInicial);
+
+Si el angulo inicial es 179 grados y el nuevo es -179 grados:
+    diferencia directa = -179 - 179 = -358 grados.
+    diferencia normalizada = +2 grados.
+Ambas diferencias llevan a la misma orientacion, pero +2 describe el giro corto.
+En el programa esos valores se expresan en radianes. El metodo evita que el paso
+entre +PI y -PI sea interpretado como una vuelta casi completa.
+
+2. ARCHIVO COMPLETO: src/main/java/com/graphics/entidades/Huella.java
+
+package com.graphics.entidades; // Comparte paquete con Automovil y Chata.
+
+// Rectangulo orientado: centro, angulo y MITADES de ancho y largo.
+public record Huella(float x, float z, float angulo, float semiancho, float semilargo) {
+    public float radioEnEje(float ejeX, float ejeZ) { // Semiextension proyectada sobre un eje unitario.
+        float seno = (float) Math.sin(angulo); // Guarda el seno para no repetir su calculo.
+        float coseno = (float) Math.cos(angulo); // Guarda el coseno del giro.
+        // Suma las contribuciones de los lados del rectangulo sobre el eje consultado.
+        // abs elimina el signo: una longitud proyectada debe ser positiva.
+        return semiancho * Math.abs(ejeX * coseno - ejeZ * seno)
+                + semilargo * Math.abs(ejeX * seno + ejeZ * coseno);
+    }
+
+    public float solapamientoCon(Huella otra) { // Compara dos rectangulos girados.
+        // SAT: se busca una separacion sobre los ejes de ambos rectangulos.
+        float[][] ejes = {
+            {(float) Math.cos(angulo), -(float) Math.sin(angulo)}, // Lado transversal propio.
+            {(float) Math.sin(angulo), (float) Math.cos(angulo)}, // Lado longitudinal propio.
+            {(float) Math.cos(otra.angulo), -(float) Math.sin(otra.angulo)}, // Transversal del otro.
+            {(float) Math.sin(otra.angulo), (float) Math.cos(otra.angulo)} // Longitudinal del otro.
+        };
+        float minimo = Float.POSITIVE_INFINITY; // Acumula la penetracion mas pequena.
+        for (float[] eje : ejes) { // Prueba los cuatro ejes.
+            // Proyecta la diferencia entre centros sobre el eje.
+            float distancia = Math.abs((otra.x - x) * eje[0] + (otra.z - z) * eje[1]);
+            // Compara la suma de semiextensiones con la separacion de los centros.
+            float penetracion = radioEnEje(eje[0], eje[1])
+                    + otra.radioEnEje(eje[0], eje[1]) - distancia;
+            if (penetracion < 0) return -1; // Un solo eje separado demuestra que no chocan.
+            minimo = Math.min(minimo, penetracion); // Guarda el contacto mas superficial.
+        }
+        return minimo; // 0: contacto; positivo: solapamiento; -1: separados.
+    }
+
+    public boolean contiene(float puntoX, float puntoZ, float margen) { // Punto contra rectangulo.
+        float dx = puntoX - x; // Diferencia X respecto al centro.
+        float dz = puntoZ - z; // Diferencia Z respecto al centro.
+        // Aplica la rotacion inversa: expresa el punto en los ejes de la huella.
+        float lateral = dx * (float) Math.cos(angulo) - dz * (float) Math.sin(angulo);
+        float longitudinal = dx * (float) Math.sin(angulo) + dz * (float) Math.cos(angulo);
+        // El punto debe estar dentro de los dos limites; margen reserva espacio adicional.
+        return Math.abs(lateral) <= semiancho + margen
+                && Math.abs(longitudinal) <= semilargo + margen;
+    }
+
+    public double distanciaFirmada(float puntoX, float puntoZ) { // Distancia con signo al rectangulo.
+        float dx = puntoX - x; // Lleva el punto al origen del rectangulo.
+        float dz = puntoZ - z;
+        // Coordenadas locales absolutas menos las semidimensiones.
+        double lateral = Math.abs(dx * Math.cos(angulo) - dz * Math.sin(angulo)) - semiancho;
+        double longitudinal = Math.abs(dx * Math.sin(angulo) + dz * Math.cos(angulo)) - semilargo;
+        // Fuera: distancia euclidiana a los lados/esquinas.
+        // Dentro: distancia negativa al borde mas cercano. En el borde: cero.
+        return Math.hypot(Math.max(lateral, 0), Math.max(longitudinal, 0))
+                + Math.min(Math.max(lateral, longitudinal), 0);
+    }
+}
+
+Como explicar SAT: "Si puedo separar las proyecciones de dos rectangulos en uno
+de sus ejes, los objetos no chocan. Si se superponen en todos esos ejes, existe
+contacto o penetracion". La prueba usa cuatro ejes porque ambos objetos pueden girar.
+
+3. CONEXIONES EN SimuladorCiudad.java
+
+Estos imports van junto a los imports existentes:
+    import com.graphics.entidades.Chata; // Entidad con el movimiento del remolque.
+    import com.graphics.entidades.Huella; // Rectangulos de colision.
+
+Este campo va dentro de la clase, junto a automovilJugador:
+    private final Chata chata; // Una chata asociada al jugador durante toda la partida.
+
+En el constructor, DESPUES de crear automovilJugador:
+    chata = new Chata(automovilJugador); // Crea y coloca la chata detras de ese auto.
+    gestorTrafico.setChataJugador(chata); // Informa al trafico de que debe evitarla.
+
+Se conservan estas conexiones que ya existian:
+    gestorPersonas.setDetectorVehiculos(this::hayVehiculoCercaDelPeaton);
+    // Entrega al gestor un metodo para consultar si un punto esta ocupado.
+    gestorPersonas.setMedidorDistanciaVehiculos(this::distanciaVehiculoMasCercano);
+    // Le permite comprobar si un peaton que esta dentro de una huella se esta alejando.
+
+En reiniciar(), justo despues de controlJugador.reiniciar():
+    chata.reiniciar(); // Reinicia la chata usando la posicion ya reiniciada del auto.
+
+En escena(), despues de dibujarAuto():
+    dibujarChata(); // Dibuja la chata en cada cuadro, con su propio estado.
+
+En actualizarConduccion(), se utiliza esta comprobacion:
+    if (moverAutomovilConChata(siguienteX, siguienteZ, angulo)) {
+        automovilJugador.setVelocidad(velocidad); // Conserva la velocidad si el recorrido fue valido.
+    } else {
+        automovilJugador.setVelocidad(0.0f); // Detiene el conjunto cuando encuentra un obstaculo.
+    }
+
+En actualizarAutoSinConductor(), se usa el mismo mecanismo con el angulo actual:
+    if (moverAutomovilConChata(siguienteX, siguienteZ, automovilJugador.getAngulo())) {
+        automovilJugador.setVelocidad(velocidad); // Avanza por inercia con el remolque.
+    } else {
+        automovilJugador.setVelocidad(0.0f); // Tambien se detiene al chocar sin conductor.
+    }
+
+4. MOVIMIENTO Y COLISIONES EN SimuladorCiudad.java
+
+boolean moverAutomovilConChata(float x, float z, float angulo) { // Recibe la pose deseada del auto.
+    float xInicial = automovilJugador.getX(); // Guarda el inicio X del movimiento.
+    float zInicial = automovilJugador.getZ(); // Guarda el inicio Z.
+    float anguloInicial = automovilJugador.getAngulo(); // Guarda la orientacion inicial.
+    float giro = Chata.normalizarAngulo(angulo - anguloInicial); // Obtiene el giro corto.
+
+    // Divide la traslacion en pasos de hasta 0.10 y el giro en pasos de hasta 2 grados.
+    // ceil redondea hacia arriba; max garantiza al menos un paso y atiende ambos limites.
+    int pasos = Math.max(1, Math.max((int) Math.ceil(Math.hypot(x - xInicial, z - zInicial) / 0.10),
+            (int) Math.ceil(Math.abs(giro) / Math.toRadians(2))));
+
+    for (int i = 1; i <= pasos; i++) { // Recorre el movimiento en varios pasos pequenos.
+        float t = i / (float) pasos; // Proporcion de avance entre 0 y 1.
+        float siguienteX = xInicial + (x - xInicial) * t; // Interpolacion de X.
+        float siguienteZ = zInicial + (z - zInicial) * t; // Interpolacion de Z.
+        float siguienteAngulo = anguloInicial + giro * t; // Interpolacion del giro.
+        Chata.Estado propuesta = chata.predecir(siguienteX, siguienteZ, siguienteAngulo); // Predice la chata.
+        // Deben estar libres las huellas del auto Y de la chata; || significa "o".
+        if (!puedeCircular(siguienteX, siguienteZ, siguienteAngulo)
+                || !puedeCircularChata(propuesta, siguienteX, siguienteZ, siguienteAngulo)) {
+            return false; // Se detiene en el ultimo paso confirmado; no atraviesa el obstaculo.
+        }
+        automovilJugador.setPosicion(siguienteX, siguienteZ); // Confirma el paso del auto.
+        automovilJugador.setAngulo(siguienteAngulo); // Confirma su giro.
+        chata.confirmar(propuesta); // Confirma la chata correspondiente al mismo paso.
+    }
+    return true; // Se pudo completar todo el recorrido solicitado.
+}
+
+private boolean empeoraContacto(Huella propuesta, Huella actual, Huella obstaculo) {
+    float nuevo = propuesta.solapamientoCon(obstaculo); // Contacto que tendria la nueva posicion.
+    float previo = actual.solapamientoCon(obstaculo); // Contacto que existe ahora.
+    // Rechaza un choque nuevo o uno existente que no disminuye lo suficiente.
+    // Las tolerancias pequenas reducen problemas de precision de los float.
+    return nuevo > 0.00001f && (previo <= 0.0f || nuevo >= previo - 0.00001f);
+}
+
+private boolean puedeCircularChata(Chata.Estado propuesta, float autoX, float autoZ, float anguloAuto) {
+    java.util.List<Huella> nuevas = chata.getHuellas(propuesta); // Caja, ruedas y barra propuestas.
+    java.util.List<Huella> actuales = chata.getHuellas(chata.getEstado()); // Las mismas piezas actuales.
+    Huella autoPropio = new Huella(autoX, autoZ, anguloAuto, 1.05f, 1.35f); // Rectangulo del auto propio.
+    for (int i = 0; i < nuevas.size(); i++) { // Valida cada pieza del remolque.
+        Huella nueva = nuevas.get(i); // Pieza en la posicion propuesta.
+        Huella actual = actuales.get(i); // Misma pieza en la posicion anterior.
+        // Centro absoluto mas extension: comprueba la pieza completa, no solo su centro.
+        if (Math.abs(nueva.x()) + nueva.radioEnEje(1, 0) > LIMITE
+                || Math.abs(nueva.z()) + nueva.radioEnEje(0, 1) > LIMITE) {
+            motivoBloqueo = "chata en el limite de la ciudad"; // Explica el bloqueo en el HUD.
+            return false; // Impide salir del mapa.
+        }
+        // Los indices 0, 1 y 2 son caja y ruedas. Se excluye la barra que llega al enganche.
+        if (i < 3 && nueva.solapamientoCon(autoPropio) > 0.001f) {
+            motivoBloqueo = "angulo de la chata"; // Giro demasiado cerrado para la geometria actual.
+            return false; // Impide plegar la caja o las ruedas dentro del auto.
+        }
+        for (int fila = 0; fila < MAPA.length; fila++) { // Recorre las filas del mapa.
+            for (int columna = 0; columna < MAPA[fila].length; columna++) { // Recorre sus columnas.
+                if (MAPA[fila][columna] == 0) continue; // Las calles no son obstaculos estaticos.
+                Huella celda = new Huella(centro(columna), centro(fila), 0, 5, 5); // Manzana de 10 por 10.
+                if (empeoraContacto(nueva, actual, celda)) { // Comprueba contra la manzana.
+                    motivoBloqueo = "chata junto a " + (MAPA[fila][columna] == 1 ? "acera" : "parque");
+                    return false; // Bloquea el movimiento que entra o no sale del contacto.
+                }
+            }
+        }
+        for (Automovil auto : gestorTrafico.getAutomoviles()) { // Revisa los autos NPC.
+            Huella otro = new Huella(auto.getXCarril(), auto.getZCarril(), auto.getAngulo(), 0.92f, 1.20f);
+            // getXCarril/getZCarril corresponden al centro donde se dibuja el NPC.
+            if (empeoraContacto(nueva, actual, otro)) {
+                motivoBloqueo = "chata contra auto " + identificarColorAuto(auto);
+                return false;
+            }
+        }
+        for (Persona persona : gestorPersonas.getPeatones()) { // Revisa los cuerpos de los peatones.
+            // El cuerpo se aproxima con un cuadrado de 0.44 por 0.44.
+            if (empeoraContacto(nueva, actual, new Huella(persona.getX(), persona.getZ(), 0, 0.22f, 0.22f))) {
+                motivoBloqueo = "peaton junto a la chata";
+                return false;
+            }
+        }
+        // Cuando el jugador va a pie, su cuerpo tambien es un obstaculo para la chata en movimiento.
+        if (!controlJugador.estaConduciendo() && empeoraContacto(nueva, actual,
+                new Huella(personaJugador.getX(), personaJugador.getZ(), 0, 0.22f, 0.22f))) {
+            motivoBloqueo = "jugador junto a la chata";
+            return false;
+        }
+    }
+    return true; // Ninguna pieza encontro una colision que impida este paso.
+}
+
+5. DIBUJO EN SimuladorCiudad.java
+
+Cada llamada tiene esta forma:
+    piezaChata(x, y, z, ancho, alto, largo, rojo, verde, azul);
+
+Los primeros tres valores colocan la pieza. Los tres siguientes definen su tamano.
+Los tres ultimos son el color RGB con valores entre 0 y 1. Las dimensiones son
+completas; en Huella se usan sus mitades. Las ruedas se representan con cajas.
+
+private void dibujarChata() {
+    float centroZ = 0.0f; // El centro longitudinal local coincide con el eje de ruedas.
+
+    // Barra del enganche: centro local -1.25, altura 0.48, ancho/alto 0.12 y largo 0.80.
+    piezaChata(0, 0.48f, Chata.CENTRO_BARRA,
+            0.12f, 0.12f, Chata.LARGO_BARRA,
+            0.16f, 0.16f, 0.18f); // Color gris oscuro.
+    Chata.Estado posicion = chata.getEstado(); // Consulta donde esta el enganche en el mundo.
+    cajaGirada(posicion.engancheX(), 0.48f, posicion.engancheZ(),
+            0.18f, 0.16f, 0.18f, 0.25f, 0.25f, 0.27f, posicion.angulo()); // Pequeno conector metalico.
+
+    // Chasis: estructura bajo la caja, de 1.22 por 0.12 por 1.70.
+    piezaChata(0, 0.47f, centroZ,
+            1.22f, 0.12f, 1.70f,
+            0.15f, 0.15f, 0.17f); // Gris oscuro.
+
+    // Piso de madera: 1.30 de ancho, 0.10 de grosor y 1.70 de largo.
+    piezaChata(0, 0.58f, centroZ,
+            1.30f, 0.10f, 1.70f,
+            0.55f, 0.34f, 0.17f); // Color marron.
+
+    for (int fila = 0; fila < 3; fila++) { // Dibuja tres filas de tablas por pared.
+        float altura = 0.72f + fila * 0.18f; // Alturas: 0.72, 0.90 y 1.08.
+        for (float lado : new float[]{-0.61f, 0.61f}) { // Una pared en cada lado del eje X.
+            piezaChata(lado, altura, centroZ,
+                    0.08f, 0.14f, 1.70f, // Tabla lateral fina, alta 0.14 y larga 1.70.
+                    0.65f, 0.43f, 0.24f); // Marron mas claro.
+        }
+        for (float extremo : new float[]{-0.80f, 0.80f}) { // Frente y fondo de la caja.
+            piezaChata(0, altura, centroZ + extremo,
+                    1.30f, 0.14f, 0.10f, // Tabla transversal de 1.30 de ancho.
+                    0.65f, 0.43f, 0.24f);
+        }
+    }
+    for (float lado : new float[]{-0.62f, 0.62f}) { // Coordenadas X de las esquinas.
+        for (float extremo : new float[]{-0.81f, 0.81f}) { // Coordenadas Z de las esquinas.
+            piezaChata(lado, 0.86f, centroZ + extremo,
+                    0.08f, 0.60f, 0.08f, // Poste vertical: alto 0.60, seccion 0.08 por 0.08.
+                    0.12f, 0.12f, 0.14f); // Cuatro postes oscuros en total.
+        }
+    }
+    piezaChata(0, 0.30f, centroZ,
+            1.48f, 0.08f, 0.08f, // Eje transversal que une las ruedas.
+            0.20f, 0.20f, 0.22f);
+
+    for (float lado : new float[]{-0.73f, 0.73f}) { // Una rueda en cada costado.
+        piezaChata(lado, 0.30f, centroZ,
+                0.20f, 0.48f, 0.50f, // Rueda aproximada mediante una caja.
+                0.05f, 0.05f, 0.05f); // Negro casi puro.
+    }
+}
+
+private void piezaChata(float x, float y, float z, float sx, float sy, float sz,
+        float r, float g, float b) { // Recibe posicion local, tamano y color de una pieza.
+    Chata.Estado posicion = chata.getEstado(); // Usa la pose propia del remolque.
+    // Convierte X y Z locales al mundo y gira la geometria con el angulo de la chata.
+    // Y se conserva porque el remolque se mueve sobre el plano horizontal.
+    cajaGirada(Chata.mundoX(posicion, x, z), y, Chata.mundoZ(posicion, x, z),
+            sx, sy, sz, r, g, b, posicion.angulo());
+}
+
+La funcion cajaGirada ya pertenece al motor de dibujo de AppCiudad. Dibuja una
+caja con posicion, dimensiones, color y giro. piezaChata la usa para todas las
+piezas y agrega la transformacion desde las coordenadas locales del remolque.
+
+6. DETECCION A PIE Y PARA LOS PEATONES, EN SimuladorCiudad.java
+
+Al principio del metodo existente puedeCaminar(float x, float z):
+    if (chata.contiene(x, z, 0.32f)) return false;
+    // Reserva 0.32 alrededor de la caja, ruedas y barra para el cuerpo del jugador.
+
+El detector completo utilizado por GestorPersonas queda asi:
+private boolean hayVehiculoCercaDelPeaton(float x, float z) {
+    for (Automovil auto : gestorTrafico.getAutomoviles()) { // Consulta los autos NPC.
+        if (puntoDentroDeAuto(x, z, auto.getXCarril(), auto.getZCarril(),
+                auto.getAngulo(), false)) return true; // El punto entra en un auto NPC.
+    }
+    return chata.contiene(x, z, 0.32f) // El punto entra en una pieza del remolque con margen.
+            || puntoDentroDeAuto(x, z, automovilJugador.getX(), automovilJugador.getZ(),
+                    automovilJugador.getAngulo(), true); // O entra en el auto del jugador.
+}
+
+private double distanciaVehiculoMasCercano(float x, float z) {
+    double distanciaMinima = chata.distanciaFirmada(x, z); // Empieza consultando las piezas de la chata.
+    for (Automovil auto : gestorTrafico.getAutomoviles()) { // Compara con los NPC.
+        Huella huella = new Huella(auto.getXCarril(), auto.getZCarril(), auto.getAngulo(), 0.73f, 1.18f);
+        distanciaMinima = Math.min(distanciaMinima, huella.distanciaFirmada(x, z)); // Conserva la menor.
+    }
+    Huella auto = new Huella(automovilJugador.getX(), automovilJugador.getZ(),
+            automovilJugador.getAngulo(), 1.05f, 1.35f); // Tambien considera el auto propio.
+    return Math.min(distanciaMinima, auto.distanciaFirmada(x, z)); // Resultado mas cercano.
+}
+
+GestorPersonas usa estas consultas para planear el rodeo. Esta funcion de
+distancia no dibuja ni mueve al peaton: le ayuda a validar que se aleje cuando
+un vehiculo lo ha dejado inicialmente dentro de una huella.
+
+7. CAMBIOS RELACIONADOS EN entidades/Automovil.java
+
+Import adicional:
+    import java.util.function.Predicate;
+    // Predicate recibe un Automovil y responde true o false a una validacion.
+
+Metodo completo agregado dentro de Automovil:
+public boolean actualizarSi(float deltaTime, Predicate<Automovil> posicionValida) {
+    float xAnterior = x; // Guarda X por si hay que rechazar el avance.
+    float zAnterior = z; // Guarda Z.
+    float anguloAnterior = angulo; // Guarda el giro.
+    int puntoAnterior = siguientePunto; // Guarda el progreso de la ruta principal.
+    float[][] evasionAnterior = rutaEvasion; // Guarda la ruta de evasion, si existe.
+    int puntoEvasionAnterior = siguientePuntoEvasion; // Guarda su progreso.
+    actualizar(deltaTime); // Ejecuta provisionalmente el movimiento normal del NPC.
+    if (posicionValida.test(this)) return true; // Si la validacion acepta, conserva el avance.
+    x = xAnterior; // Si no acepta, restaura el estado completo.
+    z = zAnterior;
+    angulo = anguloAnterior;
+    siguientePunto = puntoAnterior;
+    rutaEvasion = evasionAnterior;
+    siguientePuntoEvasion = puntoEvasionAnterior;
+    return false; // Informa que el NPC no pudo realizar este paso.
+}
+
+Guardar tambien los indices evita que el NPC avance en su ruta internamente
+mientras su posicion visible se queda detenida delante de la chata.
+
+8. CAMBIOS RELACIONADOS EN sistemas/GestorTrafico.java
+
+Imports adicionales:
+    import com.graphics.entidades.Chata;
+    import com.graphics.entidades.Huella;
+
+Campo dentro de GestorTrafico:
+    private Chata chataJugador; // Referencia a la chata que debe respetar el trafico.
+
+public void setChataJugador(Chata chataJugador) { // Recibe la referencia creada en el simulador.
+    this.chataJugador = chataJugador; // La guarda; ambos objetos consultan la misma chata.
+}
+
+En las tres ramas de actualizar() que antes avanzaban directamente un NPC, se usa:
+    avanzarSinAtravesarChata(automovil, deltaTime);
+    // Se aplica al movimiento normal, a una evasion activa y al inicio de una evasion.
+
+private void avanzarSinAtravesarChata(Automovil auto, float deltaTime) {
+    // Calcula cuantos pasos hacen falta para no avanzar mas de 0.10 por paso sobre la ruta.
+    int pasos = Math.max(1, (int) Math.ceil(auto.getVelocidadRuta() * Math.max(0, deltaTime) / 0.10f));
+    for (int i = 0; i < pasos; i++) { // Comprueba el trayecto, no solamente el destino final.
+        Huella anterior = huellaAuto(auto); // Conserva la huella anterior del NPC.
+        boolean libre = auto.actualizarSi(deltaTime / pasos, candidato -> {
+            // La expresion candidato -> { ... } es una funcion de validacion.
+            if (chataJugador == null) return true; // Sin chata registrada, no hay este obstaculo.
+            Huella propuesta = huellaAuto(candidato); // Huella del NPC despues del paso provisional.
+            for (Huella chata : chataJugador.getHuellas(chataJugador.getEstado())) { // Revisa cada pieza.
+                float nuevo = propuesta.solapamientoCon(chata); // Nuevo contacto.
+                float previo = anterior.solapamientoCon(chata); // Contacto anterior.
+                // Permite salir de un solapamiento previo, pero rechaza entrar o quedarse igual.
+                if (nuevo > 0.00001f && (previo <= 0 || nuevo >= previo - 0.00001f)) return false;
+            }
+            return true; // Ninguna pieza bloqueo este paso.
+        });
+        if (!libre) { // actualizarSi ya restauro el paso rechazado.
+            auto.setVelocidad(0); // Detiene al NPC.
+            return; // No intenta los pasos restantes de este cuadro.
+        }
+    }
+    auto.setVelocidad(auto.getVelocidadRuta()); // El recorrido completo estaba libre.
+}
+
+private Huella huellaAuto(Automovil auto) { // Rectangulo utilizado para el contacto del NPC.
+    return new Huella(auto.getXCarril(), auto.getZCarril(), auto.getAngulo(), 0.92f, 1.20f);
+}
+
+Metodo completo para detectar el conjunto del jugador antes de llegar al contacto:
+private boolean debeDetenerseAnteJugador(Automovil auto) {
+    if (automovilJugador == null || auto == automovilJugador) return false; // Evita consultar un jugador inexistente.
+    float frenteX = auto.getObjetivoX() - auto.getX(); // Direccion hacia el proximo punto de ruta.
+    float frenteZ = auto.getObjetivoZ() - auto.getZ();
+    float longitud = (float) Math.sqrt(frenteX * frenteX + frenteZ * frenteZ); // Longitud del vector.
+    if (longitud < 0.01f) return false; // No usa una direccion casi nula.
+    frenteX /= longitud; // Normaliza la direccion a longitud 1.
+    frenteZ /= longitud;
+    float dx = automovilJugador.getX() - auto.getXCarril(); // Vector hacia el auto del jugador.
+    float dz = automovilJugador.getZ() - auto.getZCarril();
+    float adelante = dx * frenteX + dz * frenteZ; // Distancia proyectada hacia adelante.
+    float lateral = Math.abs(dx * frenteZ - dz * frenteX); // Separacion transversal.
+    boolean bloqueaAuto = adelante > -0.8f && adelante < 7.5f && lateral < 2.0f; // Frenado existente por el auto.
+    if (bloqueaAuto || chataJugador == null) return bloqueaAuto; // Si ya debe frenar, no necesita mas consultas.
+    for (Huella chata : chataJugador.getHuellas(chataJugador.getEstado())) { // Revisa piezas del remolque.
+        float haciaX = chata.x() - auto.getXCarril(); // Vector del NPC a la pieza.
+        float haciaZ = chata.z() - auto.getZCarril();
+        float adelanteChata = haciaX * frenteX + haciaZ * frenteZ; // Componente longitudinal.
+        float lateralChata = Math.abs(haciaX * frenteZ - haciaZ * frenteX); // Componente transversal.
+        float radioFrente = chata.radioEnEje(frenteX, frenteZ); // Tamano de la pieza proyectado hacia adelante.
+        float radioLateral = chata.radioEnEje(frenteZ, -frenteX); // Tamano proyectado al costado.
+        // Frena si la pieza ocupa el corredor delantero con una distancia de anticipacion.
+        if (adelanteChata > -radioFrente && adelanteChata < radioFrente + 4.2f
+                && lateralChata < radioLateral + 1.05f) return true;
+    }
+    return false; // El conjunto no ocupa ese corredor delantero.
+}
+
+Dentro del bucle de puntos de prueba de puedeEsquivar(), tambien esta este bloque:
+if (chataJugador != null) { // Comprueba que el carril de evasion no atraviese la chata.
+    Huella propuesta = new Huella(x, z, auto.getAngulo(), 0.92f, 1.20f); // Huella del NPC en el punto de prueba.
+    for (Huella huella : chataJugador.getHuellas(chataJugador.getEstado())) { // Compara con cada pieza.
+        if (propuesta.solapamientoCon(huella) >= 0) return false; // Rechaza un recorrido ocupado.
+    }
+}
+
+9. ORDEN PARA EXPLICARLO EN UNA EXPOSICION
+
+1) Modelo visual: caja abierta, dos ruedas y barra, construidas con cajas OpenGL.
+2) Estado: el remolque guarda posicion y angulo independientes del auto.
+3) Enganche: esta detras del auto y la distancia al eje se mantiene constante.
+4) Articulacion: atan2 calcula el angulo usando el enganche nuevo y el eje anterior.
+5) Coordenadas: seno y coseno rotan las piezas locales y luego se trasladan al mundo.
+6) Colisiones: cuatro rectangulos representan caja, ruedas y barra.
+7) Validacion: se prueban pasos pequenos antes de confirmar el avance del conjunto.
+8) Integracion: trafico y peatones consultan esas mismas posiciones para evitar la chata.
+
+Las pruebas automatizadas estan en ChataTest.java, SimuladorChataTest.java y
+GestorTraficoChataTest.java. Comprueban union, giro, marcha atras, deteccion de
+piezas y detencion ante contactos; no reemplazan la revision visual de la ventana.

@@ -1,6 +1,8 @@
 package com.graphics.sistemas;
 
 import com.graphics.entidades.Automovil;
+import com.graphics.entidades.Chata;
+import com.graphics.entidades.Huella;
 import com.graphics.entidades.EstadoPersona;
 import com.graphics.entidades.Persona;
 import java.util.ArrayList;
@@ -18,6 +20,7 @@ public class GestorTrafico {
     private final IntUnaryOperator consultarEstadoSemaforo;
     private final Map<Automovil, Float> tiempoBloqueadoPorJugador = new IdentityHashMap<>();
     private Automovil automovilJugador;
+    private Chata chataJugador;
     private static final float TIEMPO_ANTES_DE_ESQUIVAR = 2.0f;
     private static final float DESVIO_LATERAL = 3.6f;
 
@@ -38,6 +41,10 @@ public class GestorTrafico {
         this.automovilJugador = automovilJugador;
     }
 
+    public void setChataJugador(Chata chataJugador) {
+        this.chataJugador = chataJugador;
+    }
+
     public void actualizar(float deltaTime, Collection<Persona> peatones) {
         for (Automovil automovil : automoviles) {
             boolean semaforo = debeDetenerseEnSemaforo(automovil);
@@ -48,8 +55,7 @@ public class GestorTrafico {
 
             if (automovil.estaEsquivando()) {
                 if (!semaforo && !peaton && !otroAuto && !autoALaIzquierda && !jugadorBloquea) {
-                    automovil.actualizar(deltaTime);
-                    automovil.setVelocidad(automovil.getVelocidadRuta());
+                    avanzarSinAtravesarChata(automovil, deltaTime);
                 } else {
                     automovil.setVelocidad(0.0f);
                 }
@@ -71,8 +77,7 @@ public class GestorTrafico {
                                 && automovil.iniciarEvasion(lado,
                                         automovilJugador.getX(), automovilJugador.getZ())) {
                             tiempoBloqueadoPorJugador.remove(automovil);
-                            automovil.actualizar(deltaTime);
-                            automovil.setVelocidad(automovil.getVelocidadRuta());
+                            avanzarSinAtravesarChata(automovil, deltaTime);
                             break;
                         }
                     }
@@ -85,12 +90,37 @@ public class GestorTrafico {
 
             tiempoBloqueadoPorJugador.remove(automovil);
             if (!semaforo && !peaton && !otroAuto && !autoALaIzquierda && !jugadorBloquea) {
-                automovil.actualizar(deltaTime);
-                automovil.setVelocidad(automovil.getVelocidadRuta());
+                avanzarSinAtravesarChata(automovil, deltaTime);
             } else {
                 automovil.setVelocidad(0.0f);
             }
         }
+    }
+
+    private void avanzarSinAtravesarChata(Automovil auto, float deltaTime) {
+        int pasos = Math.max(1, (int) Math.ceil(auto.getVelocidadRuta() * Math.max(0, deltaTime) / 0.10f));
+        for (int i = 0; i < pasos; i++) {
+            Huella anterior = huellaAuto(auto);
+            boolean libre = auto.actualizarSi(deltaTime / pasos, candidato -> {
+                if (chataJugador == null) return true;
+                Huella propuesta = huellaAuto(candidato);
+                for (Huella chata : chataJugador.getHuellas(chataJugador.getEstado())) {
+                    float nuevo = propuesta.solapamientoCon(chata);
+                    float previo = anterior.solapamientoCon(chata);
+                    if (nuevo > 0.00001f && (previo <= 0 || nuevo >= previo - 0.00001f)) return false;
+                }
+                return true;
+            });
+            if (!libre) {
+                auto.setVelocidad(0);
+                return;
+            }
+        }
+        auto.setVelocidad(auto.getVelocidadRuta());
+    }
+
+    private Huella huellaAuto(Automovil auto) {
+        return new Huella(auto.getXCarril(), auto.getZCarril(), auto.getAngulo(), 0.92f, 1.20f);
     }
 
     private boolean debeDetenerseAnteJugador(Automovil auto) {
@@ -107,7 +137,19 @@ public class GestorTrafico {
         float lateral = Math.abs(dx * frenteZ - dz * frenteX);
         // Espera hasta estar cerca; a 12 m el rodeo se ve prematuro aunque el
         // auto estacionado todavia no represente un obstaculo inmediato.
-        return adelante > -0.8f && adelante < 7.5f && lateral < 2.0f;
+        boolean bloqueaAuto = adelante > -0.8f && adelante < 7.5f && lateral < 2.0f;
+        if (bloqueaAuto || chataJugador == null) return bloqueaAuto;
+        for (Huella chata : chataJugador.getHuellas(chataJugador.getEstado())) {
+            float haciaX = chata.x() - auto.getXCarril();
+            float haciaZ = chata.z() - auto.getZCarril();
+            float adelanteChata = haciaX * frenteX + haciaZ * frenteZ;
+            float lateralChata = Math.abs(haciaX * frenteZ - haciaZ * frenteX);
+            float radioFrente = chata.radioEnEje(frenteX, frenteZ);
+            float radioLateral = chata.radioEnEje(frenteZ, -frenteX);
+            if (adelanteChata > -radioFrente && adelanteChata < radioFrente + 4.2f
+                    && lateralChata < radioLateral + 1.05f) return true;
+        }
+        return false;
     }
 
     private float ladoLibreParaEsquivar(Automovil auto) {
@@ -139,6 +181,12 @@ public class GestorTrafico {
             if (automovilJugador != null
                     && distanciaCuadrada(x, z, automovilJugador.getX(), automovilJugador.getZ()) < 10.0f) {
                 return false;
+            }
+            if (chataJugador != null) {
+                Huella propuesta = new Huella(x, z, auto.getAngulo(), 0.92f, 1.20f);
+                for (Huella huella : chataJugador.getHuellas(chataJugador.getEstado())) {
+                    if (propuesta.solapamientoCon(huella) >= 0) return false;
+                }
             }
             for (Automovil otro : automoviles) {
                 if (otro != auto && distanciaCuadrada(x, z, otro.getXCarril(), otro.getZCarril()) < 16.0f) {

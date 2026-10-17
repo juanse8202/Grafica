@@ -2,6 +2,7 @@ package com.graphics.entidades;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Predicate;
 
 /**
  * Representa los datos y el movimiento de un automovil de la ciudad.
@@ -244,6 +245,25 @@ public class Automovil {
     }
 
     public boolean estaEsquivando() { return rutaEvasion != null; }
+
+    /** Avanza solo si la posicion es valida, conservando tambien los indices de ruta al bloquearse. */
+    public boolean actualizarSi(float deltaTime, Predicate<Automovil> posicionValida) {
+        float xAnterior = x;
+        float zAnterior = z;
+        float anguloAnterior = angulo;
+        int puntoAnterior = siguientePunto;
+        float[][] evasionAnterior = rutaEvasion;
+        int puntoEvasionAnterior = siguientePuntoEvasion;
+        actualizar(deltaTime);
+        if (posicionValida.test(this)) return true;
+        x = xAnterior;
+        z = zAnterior;
+        angulo = anguloAnterior;
+        siguientePunto = puntoAnterior;
+        rutaEvasion = evasionAnterior;
+        siguientePuntoEvasion = puntoEvasionAnterior;
+        return false;
+    }
 
     /** Avanza hacia el punto actual de la ruta usando deltaTime. */
     public void actualizar(float deltaTime) {

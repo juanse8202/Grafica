@@ -18,6 +18,9 @@ import java.util.function.ToDoubleBiFunction;
 /** Actualiza peatones, aceras y cruces; SimuladorCiudad realiza el dibujo OpenGL. */
 public class GestorPersonas {
     private static final int SEMAFORO_ROJO = 0;
+    // AppCiudad dibuja franjas de 2.5 m de ancho.
+    private static final float SEMIANCHO_PASO_CEBRA = 1.25f;
+    private static final float MARGEN_MAXIMO_RODEO = 0.65f;
     private final List<Persona> peatones = new ArrayList<>();
     private final List<CrucePeatonal> cruces = new ArrayList<>();
     private final List<CrucePeatonal> pasosCebra = new ArrayList<>();
@@ -30,7 +33,9 @@ public class GestorPersonas {
     private RutaParque[] rutasInterParque;
     private BiPredicate<Float, Float> ocupadoPorVehiculo = (x, z) -> false;
     private ToDoubleBiFunction<Float, Float> distanciaVehiculo = (x, z) -> Double.POSITIVE_INFINITY;
-    private final Map<Persona, List<float[]>> rutasEvasion = new IdentityHashMap<>();
+    private record DesvioPeaton(List<float[]> puntos, CrucePeatonal cruce, float margen) {}
+    private final Map<Persona, DesvioPeaton> rutasEvasion = new IdentityHashMap<>();
+    private final Map<Persona, Float> esperaReintentoEvasion = new IdentityHashMap<>();
 
     public GestorPersonas(float[][] semaforos, IntUnaryOperator consultarEstadoSemaforo,
             float[][] parques, int[][] mapa, float limiteCiudad, float tamanoCelda) {
@@ -57,18 +62,14 @@ public class GestorPersonas {
         ocupadoPorVehiculo = detector != null ? detector : (x, z) -> false;
     }
 
-    /** Distancia al centro del vehiculo mas cercano; permite salir de una huella inicial. */
+    /** Separacion respecto al vehiculo mas cercano; permite salir de una huella inicial. */
     public void setMedidorDistanciaVehiculos(ToDoubleBiFunction<Float, Float> medidor) {
         distanciaVehiculo = medidor != null ? medidor : (x, z) -> Double.POSITIVE_INFINITY;
     }
 
     /** Los peatones esperan fuera del paso y completan el cruce iniciado. */
     public void actualizar(float deltaTime) {
-        float[][] posicionesAnteriores = new float[peatones.size()][2];
-        for (int i = 0; i < peatones.size(); i++) {
-            posicionesAnteriores[i][0] = peatones.get(i).getX();
-            posicionesAnteriores[i][1] = peatones.get(i).getZ();
-        }
+        if (deltaTime <= 0.0f) return;
         for (RecorridoPeaton recorrido : recorridos) {
             SegmentoPeatonal segmento = recorrido.segmentos.get(recorrido.indice);
             Persona persona = recorrido.persona;
@@ -81,6 +82,7 @@ public class GestorPersonas {
                 // autonomos ceden al estado CRUZANDO; la verificacion de huella
                 // y la evasion mantienen seguro el paso si un auto quedo encima.
                 if (estado == SEMAFORO_ROJO) persona.setEstado(EstadoPersona.CRUZANDO);
+                actualizarAcompanantes(recorrido, deltaTime);
                 continue;
             }
 
@@ -93,7 +95,19 @@ public class GestorPersonas {
 
             float dx = segmento.destinoX - persona.getX();
             float dz = segmento.destinoZ - persona.getZ();
-            if (dx * dx + dz * dz < 0.04f) {
+            boolean llego = dx * dx + dz * dz < 0.04f;
+            if (segmento.cruce != null) {
+                // Un rodeo puede terminar al costado del punto original. Basta
+                // alcanzar su extremo por dentro de la franja del mismo cruce.
+                CrucePeatonal cruce = segmento.cruce;
+                float ejeX = cruce.getFinX() - cruce.getInicioX();
+                float ejeZ = cruce.getFinZ() - cruce.getInicioZ();
+                float signo = (segmento.destinoX - (cruce.getInicioX() + cruce.getFinX()) * 0.5f)
+                        * ejeX + (segmento.destinoZ - (cruce.getInicioZ() + cruce.getFinZ()) * 0.5f) * ejeZ;
+                float pendiente = (dx * ejeX + dz * ejeZ) * Math.signum(signo);
+                llego |= pendiente <= 0.12f && puntoDentroDelPaso(cruce, persona.getX(), persona.getZ());
+            }
+            if (llego) {
                 if (segmento.cruce != null) {
                     persona.setEstado(EstadoPersona.CAMINANDO);
                 }
@@ -107,42 +121,14 @@ public class GestorPersonas {
         for (PaseoParque paseo : paseosParque) {
             paseo.actualizar(deltaTime, consultarEstadoSemaforo);
         }
-
-        // Salvaguarda común para peatones de acera, cruces y paseos de parque.
-        // Muestrea el trayecto para que tampoco puedan atravesar el auto entre frames.
-        for (int i = 0; i < peatones.size(); i++) {
-            Persona persona = peatones.get(i);
-            float x0 = posicionesAnteriores[i][0];
-            float z0 = posicionesAnteriores[i][1];
-            float x1 = persona.getX();
-            float z1 = persona.getZ();
-            List<float[]> rutaEvasion = rutasEvasion.get(persona);
-            if (rutaEvasion != null && !rutaEvasion.isEmpty()) {
-                // La ruta original pudo intentar avanzar hacia el auto este frame;
-                // se conserva la última posición segura antes de seguir el desvío.
-                persona.setPosicion(x0, 0.0f, z0);
-                moverHaciaEvasion(persona, rutaEvasion, deltaTime);
-                continue;
-            }
-            if (!segmentoLibre(x0, z0, x1, z1)) {
-                persona.setPosicion(x0, 0.0f, z0);
-                List<float[]> desvio = buscarRutaEvasion(persona, x0, z0, x1, z1);
-                if (desvio != null) {
-                    rutasEvasion.put(persona, desvio);
-                    moverHaciaEvasion(persona, desvio, deltaTime);
-                } else {
-                    persona.setVelocidad(0.0f);
-                    persona.actualizarAnimacion(deltaTime, false);
-                }
-            }
-        }
     }
 
-    private boolean segmentoLibre(float x0, float z0, float x1, float z1) {
+    private boolean segmentoLibre(float x0, float z0, float x1, float z1,
+            CrucePeatonal cruce, float margen) {
         float distancia = (float) Math.hypot(x1 - x0, z1 - z0);
         int muestras = Math.max(1, (int) Math.ceil(distancia / 0.20f));
         boolean comienzaDentroDeAuto = ocupadoPorVehiculo.test(x0, z0);
-        double distanciaInicialAuto = distanciaVehiculo.applyAsDouble(x0, z0);
+        double distanciaAnteriorAuto = distanciaVehiculo.applyAsDouble(x0, z0);
         for (int muestra = 1; muestra <= muestras; muestra++) {
             float t = muestra / (float) muestras;
             float x = x0 + (x1 - x0) * t;
@@ -150,95 +136,175 @@ public class GestorPersonas {
             boolean dentroDeAuto = ocupadoPorVehiculo.test(x, z);
             // Si una animacion o un auto en movimiento dejo al peaton dentro de
             // una huella, permite solamente el movimiento que lo saque de ella.
+            double distanciaActualAuto = distanciaVehiculo.applyAsDouble(x, z);
             boolean sigueSaliendo = comienzaDentroDeAuto && dentroDeAuto
-                    && distanciaVehiculo.applyAsDouble(x, z) > distanciaInicialAuto + 0.015;
-            if (!esTransitable(x, z) || (dentroDeAuto && !sigueSaliendo)) {
+                    && distanciaActualAuto > distanciaAnteriorAuto + 0.0000001;
+            if (!esTransitableEnRodeo(x, z, cruce, margen) || (dentroDeAuto && !sigueSaliendo)) {
                 return false;
             }
+            if (!dentroDeAuto) comienzaDentroDeAuto = false;
+            distanciaAnteriorAuto = distanciaActualAuto;
         }
         return true;
     }
 
-    /** Busca un rodeo corto que se mantenga en la zona peatonal transitable. */
-    private List<float[]> buscarRutaEvasion(Persona persona, float x0, float z0,
-            float x1, float z1) {
-        float dx = x1 - x0;
-        float dz = z1 - z0;
-        float longitud = (float) Math.hypot(dx, dz);
-        if (longitud < 0.001f) {
-            dx = -(float) Math.sin(persona.getAngulo());
-            dz = -(float) Math.cos(persona.getAngulo());
-        } else {
-            dx /= longitud;
-            dz /= longitud;
+    /** A* local: rodea las huellas de los autos sin salir de la zona transitable. */
+    private DesvioPeaton buscarRutaEvasion(float x0, float z0, float destinoX, float destinoZ,
+            CrucePeatonal cruce, float margen) {
+        final float paso = 0.2f;
+        final int radio = 40; // Busca hasta 8 metros; detecta huecos de ambos lados.
+        final int ancho = radio * 2 + 1;
+        float distanciaDestino = (float) Math.hypot(destinoX - x0, destinoZ - z0);
+        if (distanciaDestino > 6.0f) {
+            destinoX = x0 + (destinoX - x0) * 6.0f / distanciaDestino;
+            destinoZ = z0 + (destinoZ - z0) * 6.0f / distanciaDestino;
         }
-        float lateralX = -dz;
-        float lateralZ = dx;
-        float[] avances = {1.8f, 2.6f, 3.5f, 4.5f, 5.5f, 6.5f, 7.5f};
-        float[] laterales = {1.35f, 1.60f, 1.85f, 2.10f, 2.35f};
-        for (float avance : avances) {
-            for (float lateral : laterales) {
-                for (int lado : new int[]{-1, 1}) {
-                    float ladoX = lateralX * lateral * lado;
-                    float ladoZ = lateralZ * lateral * lado;
-                    float[] apartarse = {x0 + ladoX, z0 + ladoZ};
-                    float[] pasarAuto = {x0 + dx * avance + ladoX,
-                            z0 + dz * avance + ladoZ};
-                    float[] volver = {x0 + dx * (avance + 0.7f),
-                            z0 + dz * (avance + 0.7f)};
-                    float[] continuar = {x0 + dx * (avance + 1.5f),
-                            z0 + dz * (avance + 1.5f)};
-                    if (segmentoLibre(x0, z0, apartarse[0], apartarse[1])
-                            && segmentoLibre(apartarse[0], apartarse[1],
-                                    pasarAuto[0], pasarAuto[1])
-                            && segmentoLibre(pasarAuto[0], pasarAuto[1],
-                                    volver[0], volver[1])
-                            && segmentoLibre(volver[0], volver[1],
-                                    continuar[0], continuar[1])) {
-                        return new ArrayList<>(Arrays.asList(apartarse, pasarAuto, volver));
+        List<float[]> destinos = destinosLibresDeEvasion(x0, z0, destinoX, destinoZ);
+        if (destinos.isEmpty()) return null;
+
+        int cantidad = ancho * ancho;
+        float[] costes = new float[cantidad];
+        int[] anterior = new int[cantidad];
+        boolean[] cerrado = new boolean[cantidad];
+        Arrays.fill(costes, Float.POSITIVE_INFINITY);
+        Arrays.fill(anterior, -1);
+        int inicio = radio * ancho + radio;
+        costes[inicio] = 0.0f;
+        PriorityQueue<NodoRuta> abiertos = new PriorityQueue<>();
+        abiertos.add(new NodoRuta(inicio, 0.0f));
+        int fin = -1;
+        float[] destinoFinal = null;
+        while (!abiertos.isEmpty()) {
+            int actual = abiertos.poll().indice;
+            if (cerrado[actual]) continue;
+            cerrado[actual] = true;
+            int columna = actual % ancho;
+            int fila = actual / ancho;
+            float x = x0 + (columna - radio) * paso;
+            float z = z0 + (fila - radio) * paso;
+            for (float[] destino : destinos) {
+                if (Math.hypot(destino[0] - x, destino[1] - z) <= paso
+                        && segmentoLibre(x, z, destino[0], destino[1], cruce, margen)) {
+                    fin = actual;
+                    destinoFinal = destino;
+                    break;
+                }
+            }
+            if (fin >= 0) break;
+            for (int dz = -1; dz <= 1; dz++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    if (dx == 0 && dz == 0) continue;
+                    int nx = columna + dx;
+                    int nz = fila + dz;
+                    if (nx < 0 || nx >= ancho || nz < 0 || nz >= ancho) continue;
+                    int siguiente = nz * ancho + nx;
+                    float coste = costes[actual] + paso * (dx != 0 && dz != 0 ? 1.414214f : 1.0f);
+                    if (cerrado[siguiente] || coste >= costes[siguiente]) continue;
+                    float siguienteX = x0 + (nx - radio) * paso;
+                    float siguienteZ = z0 + (nz - radio) * paso;
+                    if (!segmentoLibre(x, z, siguienteX, siguienteZ, cruce, margen)) continue;
+                    costes[siguiente] = coste;
+                    anterior[siguiente] = actual;
+                    float estimado = Float.POSITIVE_INFINITY;
+                    for (float[] destino : destinos) {
+                        estimado = Math.min(estimado, (float) Math.hypot(
+                                destino[0] - siguienteX, destino[1] - siguienteZ));
                     }
+                    abiertos.add(new NodoRuta(siguiente, coste + estimado));
                 }
             }
         }
-        return null;
+        if (fin < 0) return null;
+        List<float[]> ruta = new ArrayList<>();
+        ruta.add(destinoFinal);
+        for (int nodo = fin; nodo != inicio; nodo = anterior[nodo]) {
+            ruta.add(new float[]{x0 + (nodo % ancho - radio) * paso,
+                    z0 + (nodo / ancho - radio) * paso});
+        }
+        Collections.reverse(ruta);
+        return new DesvioPeaton(ruta, cruce, margen);
     }
 
-    private void moverHaciaEvasion(Persona persona, List<float[]> ruta, float deltaTime) {
-        if (ruta.isEmpty()) {
-            rutasEvasion.remove(persona);
-            return;
+    /** Prueba ambos lados aunque un auto ocupe el punto exacto de llegada. */
+    private List<float[]> destinosLibresDeEvasion(float x0, float z0, float destinoX, float destinoZ) {
+        List<float[]> destinos = new ArrayList<>();
+        if (esTransitable(destinoX, destinoZ) && !ocupadoPorVehiculo.test(destinoX, destinoZ)) {
+            destinos.add(new float[]{destinoX, destinoZ});
+            return destinos;
         }
-        float[] destino = ruta.get(0);
-        float dx = destino[0] - persona.getX();
-        float dz = destino[1] - persona.getZ();
+        float dx = destinoX - x0;
+        float dz = destinoZ - z0;
+        float longitud = (float) Math.hypot(dx, dz);
+        if (longitud < 0.001f) return destinos;
+        float ladoX = -dz / longitud;
+        float ladoZ = dx / longitud;
+        for (float lateral = 0.25f; lateral <= 2.5f; lateral += 0.25f) {
+            for (int signo : new int[]{-1, 1}) {
+                float x = destinoX + ladoX * lateral * signo;
+                float z = destinoZ + ladoZ * lateral * signo;
+                if (esTransitable(x, z) && !ocupadoPorVehiculo.test(x, z)) {
+                    destinos.add(new float[]{x, z});
+                }
+            }
+        }
+        return destinos;
+    }
+
+    private void moverHaciaEvasion(Persona persona, DesvioPeaton desvio,
+            float deltaTime, float velocidad) {
+        List<float[]> ruta = desvio.puntos();
+        float tiempoRestante = deltaTime;
+        while (!ruta.isEmpty() && tiempoRestante > 0.000001f) {
+            float[] destino = ruta.get(0);
+            float distancia = (float) Math.hypot(destino[0] - persona.getX(),
+                    destino[1] - persona.getZ());
+            if (distancia < 0.0001f) {
+                ruta.remove(0);
+                continue;
+            }
+            if (!darPaso(persona, destino[0], destino[1], tiempoRestante, velocidad,
+                    desvio.cruce(), desvio.margen())) {
+                // Recalcula si otro auto ocupa el desvio mientras lo recorre.
+                rutasEvasion.remove(persona);
+                return;
+            }
+            tiempoRestante -= Math.min(distancia / velocidad, tiempoRestante);
+            if (Math.hypot(destino[0] - persona.getX(), destino[1] - persona.getZ()) < 0.0001) {
+                ruta.remove(0);
+            }
+        }
+        if (ruta.isEmpty()) rutasEvasion.remove(persona);
+        persona.actualizarAnimacion(deltaTime, persona.getVelocidad() > 0.0f);
+    }
+
+    private boolean darPaso(Persona persona, float destinoX, float destinoZ,
+            float deltaTime, float velocidad) {
+        return darPaso(persona, destinoX, destinoZ, deltaTime, velocidad, null, 0);
+    }
+
+    private boolean darPaso(Persona persona, float destinoX, float destinoZ,
+            float deltaTime, float velocidad, CrucePeatonal cruce, float margen) {
+        float dx = destinoX - persona.getX();
+        float dz = destinoZ - persona.getZ();
         float distancia = (float) Math.hypot(dx, dz);
-        if (distancia < 0.18f) {
-            ruta.remove(0);
-            if (ruta.isEmpty()) rutasEvasion.remove(persona);
-            return;
-        }
-        float paso = Math.min(Math.max(persona.getVelocidad(), 1.0f) * deltaTime, distancia);
-        float siguienteX = persona.getX() + dx / distancia * paso;
-        float siguienteZ = persona.getZ() + dz / distancia * paso;
-        if (!segmentoLibre(persona.getX(), persona.getZ(), siguienteX, siguienteZ)) {
-            // Otro auto o peaton pudo ocupar este tramo despues de planearlo.
-            // Descarta el rodeo viejo para volver a elegir un lado libre el proximo frame.
-            rutasEvasion.remove(persona);
+        if (distancia < 0.0001f) return true;
+        float avance = Math.min(velocidad * deltaTime, distancia);
+        float x = persona.getX() + dx / distancia * avance;
+        float z = persona.getZ() + dz / distancia * avance;
+        if (!segmentoLibre(persona.getX(), persona.getZ(), x, z, cruce, margen)) {
             persona.setVelocidad(0.0f);
             persona.actualizarAnimacion(deltaTime, false);
-            return;
+            return false;
         }
-        persona.setPosicion(siguienteX, 0.0f, siguienteZ);
+        persona.setPosicion(x, 0.0f, z);
         persona.setAngulo((float) Math.atan2(-dx, -dz));
-        persona.setVelocidad(paso / Math.max(deltaTime, 0.001f));
-        if (persona.getEstado() != EstadoPersona.CRUZANDO) {
-            persona.setEstado(EstadoPersona.CAMINANDO);
-        }
-        persona.actualizarAnimacion(deltaTime, true);
+        persona.setVelocidad(velocidad);
+        return true;
     }
 
     public void reiniciar() {
         rutasEvasion.clear();
+        esperaReintentoEvasion.clear();
         for (RecorridoPeaton recorrido : recorridos) {
             recorrido.reiniciar();
         }
@@ -377,21 +443,63 @@ public class GestorPersonas {
         return estaDentroDeUnPasoCebra(x, z);
     }
 
-    private boolean estaDentroDeUnPasoCebra(float x, float z) {
+    private boolean esCalzada(float x, float z) {
+        int columna = (int) Math.floor((x + limiteCiudad) / tamanoCelda);
+        int fila = (int) Math.floor((z + limiteCiudad) / tamanoCelda);
+        return fila >= 0 && fila < mapa.length && columna >= 0
+                && columna < mapa[fila].length && mapa[fila][columna] == 0;
+    }
+
+    private boolean esTransitableEnRodeo(float x, float z, CrucePeatonal cruce, float margen) {
+        if (esTransitable(x, z)) return true;
+        // Excepcion local para un auto que tapa toda la pintura. La ruta debe
+        // terminar de nuevo dentro del paso; nunca habilita otras calles ni edificios.
+        return cruce != null && margen > 0 && esCalzada(x, z)
+                && puntoDentroDelPaso(cruce, x, z, margen);
+    }
+
+    private CrucePeatonal cruceParaRodeo(float x, float z) {
+        CrucePeatonal cercano = null;
+        double menorDistancia = Double.POSITIVE_INFINITY;
         for (CrucePeatonal cruce : pasosCebra) {
+            float medioX = (cruce.getInicioX() + cruce.getFinX()) * 0.5f;
+            float medioZ = (cruce.getInicioZ() + cruce.getFinZ()) * 0.5f;
             boolean horizontal = Math.abs(cruce.getFinX() - cruce.getInicioX())
                     >= Math.abs(cruce.getFinZ() - cruce.getInicioZ());
-            if (horizontal) {
-                float medioX = (cruce.getInicioX() + cruce.getFinX()) * 0.5f;
-                if (Math.abs(x - medioX) <= 5.3f
-                        && Math.abs(z - cruce.getInicioZ()) <= 2.6f) return true;
-            } else {
-                float medioZ = (cruce.getInicioZ() + cruce.getFinZ()) * 0.5f;
-                if (Math.abs(x - cruce.getInicioX()) <= 2.6f
-                        && Math.abs(z - medioZ) <= 5.3f) return true;
+            float lateral = horizontal ? Math.abs(z - medioZ) : Math.abs(x - medioX);
+            float longitudinal = horizontal ? Math.abs(x - medioX) : Math.abs(z - medioZ);
+            double distancia = Math.hypot(x - medioX, z - medioZ);
+            if (lateral <= SEMIANCHO_PASO_CEBRA + MARGEN_MAXIMO_RODEO
+                    && longitudinal <= 6.5f && distancia < menorDistancia) {
+                cercano = cruce;
+                menorDistancia = distancia;
             }
         }
+        return cercano;
+    }
+
+    private boolean estaDentroDeUnPasoCebra(float x, float z) {
+        for (CrucePeatonal cruce : pasosCebra) {
+            if (puntoDentroDelPaso(cruce, x, z)) return true;
+        }
         return false;
+    }
+
+    private boolean puntoDentroDelPaso(CrucePeatonal cruce, float x, float z) {
+        return puntoDentroDelPaso(cruce, x, z, 0);
+    }
+
+    private boolean puntoDentroDelPaso(CrucePeatonal cruce, float x, float z, float margen) {
+        boolean horizontal = Math.abs(cruce.getFinX() - cruce.getInicioX())
+                >= Math.abs(cruce.getFinZ() - cruce.getInicioZ());
+        if (horizontal) {
+            float medioX = (cruce.getInicioX() + cruce.getFinX()) * 0.5f;
+            return Math.abs(x - medioX) <= 5.3f
+                    && Math.abs(z - cruce.getInicioZ()) <= SEMIANCHO_PASO_CEBRA + margen;
+        }
+        float medioZ = (cruce.getInicioZ() + cruce.getFinZ()) * 0.5f;
+        return Math.abs(x - cruce.getInicioX()) <= SEMIANCHO_PASO_CEBRA + margen
+                && Math.abs(z - medioZ) <= 5.3f;
     }
 
     private RutaParque comprimirCruces(List<PuntoRuta> camino) {
@@ -421,17 +529,7 @@ public class GestorPersonas {
         if (fila < 0 || fila >= mapa.length || columna < 0
                 || columna >= mapa[fila].length || mapa[fila][columna] != 0) return null;
         for (CrucePeatonal cruce : pasosCebra) {
-            boolean horizontal = Math.abs(cruce.getFinX() - cruce.getInicioX())
-                    >= Math.abs(cruce.getFinZ() - cruce.getInicioZ());
-            if (horizontal) {
-                float medioX = (cruce.getInicioX() + cruce.getFinX()) * 0.5f;
-                if (Math.abs(punto.x - medioX) <= 5.3f
-                        && Math.abs(punto.z - cruce.getInicioZ()) <= 1.8f) return cruce;
-            } else {
-                float medioZ = (cruce.getInicioZ() + cruce.getFinZ()) * 0.5f;
-                if (Math.abs(punto.x - cruce.getInicioX()) <= 1.8f
-                        && Math.abs(punto.z - medioZ) <= 5.3f) return cruce;
-            }
+            if (puntoDentroDelPaso(cruce, punto.x, punto.z)) return cruce;
         }
         return null;
     }
@@ -640,36 +738,71 @@ public class GestorPersonas {
         Persona principal = recorrido.persona;
         float coseno = (float) Math.cos(principal.getAngulo());
         float seno = (float) Math.sin(principal.getAngulo());
-        boolean caminando = principal.getEstado() != EstadoPersona.ESPERANDO_SEMAFORO;
+        boolean guiaCaminando = principal.getEstado() != EstadoPersona.ESPERANDO_SEMAFORO;
 
         for (Acompanante grupo : recorrido.acompanantes) {
             Persona persona = grupo.persona;
             float x = principal.getX() + coseno * grupo.lateral + seno * grupo.atras;
             float z = principal.getZ() - seno * grupo.lateral + coseno * grupo.atras;
-            persona.setPosicion(x, 0.0f, z);
-            persona.setAngulo(principal.getAngulo());
-            persona.setEstado(principal.getEstado());
-            persona.setVelocidad(principal.getVelocidad());
-            persona.actualizarAnimacion(deltaTime, caminando);
+            // El guia puede llegar a la acera antes que su acompanante. Este
+            // completa su propio cruce aunque el guia espere el siguiente semaforo.
+            boolean caminando = guiaCaminando || (esCalzada(persona.getX(), persona.getZ())
+                    && Math.hypot(x - persona.getX(), z - persona.getZ()) > 0.12);
+            persona.setEstado(!guiaCaminando && caminando ? EstadoPersona.CRUZANDO : principal.getEstado());
+            if (caminando) {
+                caminarHacia(persona, x, z, deltaTime, recorrido.velocidad * 1.1f);
+            } else {
+                persona.setVelocidad(0.0f);
+                persona.actualizarAnimacion(deltaTime, false);
+            }
         }
     }
 
     private void caminarHacia(Persona persona, float destinoX, float destinoZ,
             float deltaTime, float velocidad) {
-        float dx = destinoX - persona.getX();
-        float dz = destinoZ - persona.getZ();
-        float distancia = (float) Math.sqrt(dx * dx + dz * dz);
-        if (distancia < 0.001f) return;
-
-        float avance = Math.min(velocidad * deltaTime, distancia);
-        persona.setPosicion(persona.getX() + dx / distancia * avance, 0.0f,
-                persona.getZ() + dz / distancia * avance);
-        persona.setAngulo((float) Math.atan2(-dx, -dz));
-        persona.actualizarAnimacion(deltaTime, true);
+        if (deltaTime <= 0.0f || velocidad <= 0.0f) return;
+        DesvioPeaton evasion = rutasEvasion.get(persona);
+        if (evasion != null) {
+            moverHaciaEvasion(persona, evasion, deltaTime, velocidad);
+            return;
+        }
+        if (Math.hypot(destinoX - persona.getX(), destinoZ - persona.getZ()) < 0.001f) {
+            persona.setVelocidad(0.0f);
+            persona.actualizarAnimacion(deltaTime, false);
+            return;
+        }
+        if (darPaso(persona, destinoX, destinoZ, deltaTime, velocidad)) {
+            esperaReintentoEvasion.remove(persona);
+            persona.actualizarAnimacion(deltaTime, true);
+            return;
+        }
+        float espera = esperaReintentoEvasion.getOrDefault(persona, 0.0f) - deltaTime;
+        if (espera > 0.0f) {
+            esperaReintentoEvasion.put(persona, espera);
+            return;
+        }
+        evasion = buscarRutaEvasion(persona.getX(), persona.getZ(), destinoX, destinoZ, null, 0);
+        if (evasion == null) {
+            CrucePeatonal cruce = cruceParaRodeo(persona.getX(), persona.getZ());
+            if (cruce != null) {
+                for (float margen : new float[]{0.35f, MARGEN_MAXIMO_RODEO}) {
+                    evasion = buscarRutaEvasion(persona.getX(), persona.getZ(), destinoX, destinoZ, cruce, margen);
+                    if (evasion != null) break;
+                }
+            }
+        }
+        if (evasion == null) {
+            // Un paso completamente cerrado se vuelve a consultar sin buscar cada frame.
+            esperaReintentoEvasion.put(persona, 0.4f);
+            return;
+        }
+        esperaReintentoEvasion.remove(persona);
+        rutasEvasion.put(persona, evasion);
+        moverHaciaEvasion(persona, evasion, deltaTime, velocidad);
     }
 
     /** Grupo que pasea por un parque, descansa en un banco y luego retoma el paseo. */
-    private static final class PaseoParque {
+    private final class PaseoParque {
         private final float[][] parques;
         private final Persona[] personas;
         private final float[] desplazamientos;
@@ -741,6 +874,21 @@ public class GestorPersonas {
                 guia.setEstado(EstadoPersona.CAMINANDO);
             }
 
+            // Los recorridos entre parques tienen nodos cada metro. Si un auto
+            // tapa uno, retoma el primer nodo libre del mismo cruce al rodearlo.
+            if (viajandoAParque && cruceActual != null
+                    && ocupadoPorVehiculo.test(ruta[indice][0], ruta[indice][1])) {
+                for (int siguiente = indice + 1; siguiente < ruta.length; siguiente++) {
+                    if (crucesRuta[siguiente] != null && crucesRuta[siguiente] != cruceActual) break;
+                    if (Math.hypot(ruta[siguiente][0] - guia.getX(),
+                            ruta[siguiente][1] - guia.getZ()) > 6.0f) break;
+                    if (!ocupadoPorVehiculo.test(ruta[siguiente][0], ruta[siguiente][1])) {
+                        indice = siguiente;
+                        break;
+                    }
+                    if (crucesRuta[siguiente] == null) break;
+                }
+            }
             float[] destino = ruta[indice];
             float dx = destino[0] - guia.getX();
             float dz = destino[1] - guia.getZ();
@@ -757,14 +905,9 @@ public class GestorPersonas {
                 return;
             }
 
-            float avance = Math.min(velocidad * deltaTime, distancia);
-            guia.setPosicion(guia.getX() + dx / distancia * avance, 0.0f,
-                    guia.getZ() + dz / distancia * avance);
-            guia.setAngulo((float) Math.atan2(-dx, -dz));
-            guia.setVelocidad(velocidad);
             guia.setEstado(cruceActual == null
                     ? EstadoPersona.CAMINANDO : EstadoPersona.CRUZANDO);
-            guia.actualizarAnimacion(deltaTime, true);
+            caminarHacia(guia, destino[0], destino[1], deltaTime, velocidad);
             actualizarAcompanantes(deltaTime);
         }
 
@@ -772,12 +915,24 @@ public class GestorPersonas {
             Persona guia = personas[0];
             for (int i = 1; i < personas.length; i++) {
                 Persona acompanante = personas[i];
-                acompanante.setPosicion(guia.getX() + desplazamientos[i], 0.0f, guia.getZ());
-                acompanante.setAngulo(guia.getAngulo());
-                acompanante.setVelocidad(guia.getVelocidad());
-                acompanante.setEstado(guia.getEstado());
-                acompanante.actualizarAnimacion(deltaTime,
-                        guia.getEstado() == EstadoPersona.CAMINANDO);
+                boolean terminandoCruce = guia.getEstado() == EstadoPersona.ESPERANDO_SEMAFORO
+                        && esCalzada(acompanante.getX(), acompanante.getZ())
+                        && Math.hypot(guia.getX() + desplazamientos[i] - acompanante.getX(),
+                                guia.getZ() - acompanante.getZ()) > 0.12;
+                acompanante.setEstado(terminandoCruce ? EstadoPersona.CRUZANDO : guia.getEstado());
+                boolean caminando = guia.getEstado() == EstadoPersona.CAMINANDO
+                        || guia.getEstado() == EstadoPersona.CRUZANDO || terminandoCruce;
+                if (caminando) {
+                    caminarHacia(acompanante, guia.getX() + desplazamientos[i],
+                            guia.getZ(), deltaTime, velocidad * 1.1f);
+                } else if (guia.getEstado() == EstadoPersona.SENTADA) {
+                    acompanante.setPosicion(guia.getX() + desplazamientos[i], 0.0f, guia.getZ());
+                    acompanante.setVelocidad(0.0f);
+                    acompanante.actualizarAnimacion(deltaTime, false);
+                } else {
+                    acompanante.setVelocidad(0.0f);
+                    acompanante.actualizarAnimacion(deltaTime, false);
+                }
             }
         }
 
