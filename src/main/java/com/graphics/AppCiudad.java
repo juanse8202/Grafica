@@ -1,5 +1,8 @@
 package com.graphics;
 
+import com.graphics.mundo.DecoracionDesierto;
+import com.graphics.mundo.ElementoPaisaje;
+import com.graphics.mundo.TerrenoDesierto;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -87,6 +90,9 @@ public class AppCiudad {
     // Ancho y profundida de cada celda del mapa
     protected static final float CELDA = 10;
 
+    private final TerrenoDesierto terrenoDesierto = new TerrenoDesierto(LIMITE);
+    private final DecoracionDesierto decoracionDesierto = new DecoracionDesierto(LIMITE);
+
     private static final int CANTIDAD_FAROLAS = 100; //2.2
 
     private static final int CANTIDAD_SEMAFOROS = 324; //3.2
@@ -105,8 +111,9 @@ public class AppCiudad {
         // Recorre las intersecciones de calles en orden: fila, luego columna. //2.2
         for (int fila = 2; fila < MAPA.length; fila += 2) { //2.2
             for (int columna = 2; columna < MAPA[fila].length; columna += 2) { //2.2
-                posiciones[indice][0] = centro(columna) - 4.8f; // X: columna. //2.2;
-                posiciones[indice][1] = centro(fila) - 4.8f; // Z: fila. //2.2
+                // Se acercan a la esquina de la acera del bloque suroeste. //2.2
+                posiciones[indice][0] = centro(columna) - 5.4f; // X: columna. //2.2
+                posiciones[indice][1] = centro(fila) - 5.4f; // Z: fila. //2.2
                 indice++; //2.2  
             }
         }
@@ -365,7 +372,7 @@ public class AppCiudad {
         entero("uFarosEncendidos", 0); //2.3
 
 
-        // Vista completa: se usa si no se ejecuta Vehiculo. //3.3 minimapa auto
+        // Vista completa: se usa si no se ejecuta SimuladorCiudad. //3.3 minimapa auto
         //vector("uCentroMinimapa", 0.0f, 0.0f, 0.0f); //3.3
         //decimal("uRadioMinimapa", 115.0f); //3.3
 
@@ -442,7 +449,7 @@ public class AppCiudad {
     } //3.3
 
     protected void dibujarInterfaz() { //5.2
-        // Vehiculo implementa el dibujo del panel.
+        // SimuladorCiudad implementa el dibujo del panel.
     }
 
     private void dibujarPapelera(float x, float z) {
@@ -468,6 +475,8 @@ public class AppCiudad {
     }
 
     protected void escena() {
+        dibujarPaisaje(terrenoDesierto.getElementos());
+        dibujarPaisaje(decoracionDesierto.getElementos());
         caja(0, -0.5f, 0, 210, 0.5f, 210, 0.16f, 0.19f, 0.23f);  // modifique 210
         for (int fila = 0; fila < MAPA.length; fila++) {
             for (int columna = 0; columna < MAPA[fila].length; columna++) {
@@ -496,13 +505,21 @@ public class AppCiudad {
                         dibujarPapelera(x + 3.4f, z + 2.5f); //5.2
                         
                     }
-                    dibujarPasoJuntoManzana(fila, columna, x, z); //3.1
                 }
             }
         }
+        dibujarPasosCebra();
         dibujarFarolas(); //2.2
 
         dibujarSemaforos(); //3.2
+    }
+
+    private void dibujarPaisaje(java.util.List<ElementoPaisaje> elementos) {
+        for (ElementoPaisaje elemento : elementos) {
+            cajaGirada(elemento.x(), elemento.y(), elemento.z(),
+                    elemento.ancho(), elemento.alto(), elemento.profundidad(),
+                    elemento.rojo(), elemento.verde(), elemento.azul(), elemento.giro());
+        }
     }
 
     private void dibujarFarolas() { //2.2
@@ -546,9 +563,15 @@ public class AppCiudad {
         for (float[] semaforo : semaforos) { //3.2
             int estado = estadoSemaforo(semaforo[2]); //3.2
 
+            // Solo se desplaza el dibujo hacia la esquina; las coordenadas
+            // originales siguen siendo las que usa la lógica del tráfico.
+            float distanciaEsquina = 0.45f;
+            float xEsquina = semaforo[0] - (semaforo[3] + semaforo[4]) * distanciaEsquina;
+            float zEsquina = semaforo[1] + (semaforo[3] - semaforo[4]) * distanciaEsquina;
+
             dibujarSemaforo( //3.2
-                    semaforo[0], // X //3.2
-                    semaforo[1], // Z //3.2
+                    xEsquina, // X visual hacia la esquina //3.2
+                    zEsquina, // Z visual hacia la esquina //3.2
                     estado, // Estado actual //3.2
                     semaforo[3], // Dirección X //3.2
                     semaforo[4] // Dirección Z //3.2
@@ -561,46 +584,74 @@ public class AppCiudad {
 
         // El frente iluminado queda dirigido hacia el vehículo. //3.2
         float giroSemaforo = (float) Math.atan2(direccionX, direccionZ); //3.2
-        float frenteX = -direccionX * 0.26f; //3.2
-        float frenteZ = -direccionZ * 0.26f; //3.2
-
         // Poste. //3.2
-        cajaGirada(x, 1.45f, z, 0.14f, 2.90f, 0.14f, //3.2
-                0.04f, 0.04f, 0.05f, giroSemaforo); //3.2
+        cajaGirada(x, 0.12f, z, 0.34f, 0.18f, 0.34f,
+                0.12f, 0.13f, 0.15f, giroSemaforo);
+        cajaGirada(x, 1.34f, z, 0.12f, 2.55f, 0.12f,
+                0.09f, 0.10f, 0.12f, giroSemaforo);
+        cajaGirada(x, 2.03f, z, 0.22f, 0.12f, 0.20f,
+                0.18f, 0.19f, 0.21f, giroSemaforo);
 
         // Caja negra del semáforo. //3.2
-        cajaGirada(x, 2.65f, z, 0.42f, 0.95f, 0.18f, //3.2
-                0.03f, 0.03f, 0.03f, giroSemaforo); //3.2
+        cajaGirada(x, 2.70f, z, 0.62f, 1.22f, 0.30f,
+                0.055f, 0.065f, 0.08f, giroSemaforo);
+        piezaSemaforo(x, z, giroSemaforo, 0.0f, 2.70f, -0.17f,
+                0.48f, 1.08f, 0.045f, 0.12f, 0.13f, 0.15f);
 
         // Soporte superior. //3.2
-        cajaGirada(x, 3.25f, z, 0.55f, 0.12f, 0.30f, //3.2
-                0.08f, 0.08f, 0.08f, giroSemaforo); //3.2
+        piezaSemaforo(x, z, giroSemaforo, 0.0f, 3.36f, 0.0f,
+                0.76f, 0.14f, 0.40f, 0.10f, 0.11f, 0.13f);
+        piezaSemaforo(x, z, giroSemaforo, 0.0f, 2.02f, 0.0f,
+                0.72f, 0.12f, 0.34f, 0.10f, 0.11f, 0.13f);
 
         // Luces del semáforo. //3.2
-        dibujarLuzSemaforo(x + frenteX, 3.02f, z + frenteZ, //3.2
-                1.0f, 0.02f, 0.02f, estado == SEMAFORO_ROJO); //3.2
+        dibujarLuzSemaforo(x, z, giroSemaforo, 3.05f,
+                0.95f, 0.025f, 0.02f, estado == SEMAFORO_ROJO);
 
-        dibujarLuzSemaforo(x + frenteX, 2.68f, z + frenteZ, //3.2
-                1.0f, 0.72f, 0.02f, estado == SEMAFORO_AMARILLO); //3.2
+        dibujarLuzSemaforo(x, z, giroSemaforo, 2.70f,
+                1.0f, 0.62f, 0.015f, estado == SEMAFORO_AMARILLO);
 
-        dibujarLuzSemaforo(x + frenteX, 2.34f, z + frenteZ, //3.2
-                0.02f, 1.0f, 0.08f, estado == SEMAFORO_VERDE); //3.2
+        dibujarLuzSemaforo(x, z, giroSemaforo, 2.35f,
+                0.015f, 0.88f, 0.06f, estado == SEMAFORO_VERDE);
     } //3.2
 
-    private void dibujarLuzSemaforo(float x, float y, float z, //3.2
-            float r, float g, float b, boolean encendida) { //3.2
+    private void dibujarLuzSemaforo(float baseX, float baseZ, float giro,
+            float y, float r, float g, float b, boolean encendida) {
+        piezaSemaforo(baseX, baseZ, giro, 0.0f, y, -0.205f,
+                0.32f, 0.29f, 0.16f, 0.015f, 0.018f, 0.022f);
+        piezaSemaforo(baseX, baseZ, giro, 0.0f, y, -0.298f,
+                0.22f, 0.21f, 0.035f,
+                encendida ? r : r * 0.16f,
+                encendida ? g : g * 0.16f,
+                encendida ? b : b * 0.16f,
+                giro, encendida);
+    }
 
-        if (encendida) { //3.2
-            cajaEmisiva(x, y, z, //3.2
-                    0.18f, 0.18f, 0.08f, //3.2
-                    r, g, b, //3.2
-                    r * 1.2f, g * 1.2f, b * 1.2f); //3.2
-        } else { //3.2
-            caja(x, y, z, //3.2
-                    0.18f, 0.18f, 0.08f, //3.2
-                    r * 0.20f, g * 0.20f, b * 0.20f); //3.2
-        } //3.2
-    } //3.2
+    private void piezaSemaforo(float baseX, float baseZ, float giro,
+            float localX, float y, float localZ,
+            float sx, float sy, float sz, float r, float g, float b) {
+        float coseno = (float) Math.cos(giro);
+        float seno = (float) Math.sin(giro);
+        float x = baseX + coseno * localX + seno * localZ;
+        float z = baseZ - seno * localX + coseno * localZ;
+        cajaGirada(x, y, z, sx, sy, sz, r, g, b, giro);
+    }
+
+    private void piezaSemaforo(float baseX, float baseZ, float giro,
+            float localX, float y, float localZ,
+            float sx, float sy, float sz, float r, float g, float b,
+            float giroLuz, boolean encendida) {
+        float coseno = (float) Math.cos(giro);
+        float seno = (float) Math.sin(giro);
+        float x = baseX + coseno * localX + seno * localZ;
+        float z = baseZ - seno * localX + coseno * localZ;
+        if (encendida) {
+            cajaGiradaEmisiva(x, y, z, sx, sy, sz, r, g, b,
+                    r * 1.2f, g * 1.2f, b * 1.2f, giroLuz);
+        } else {
+            cajaGirada(x, y, z, sx, sy, sz, r, g, b, giroLuz);
+        }
+    }
 
 
     private void dibujarMarcasCalles(int fila, int columna, float x, float z) {
@@ -624,21 +675,21 @@ public class AppCiudad {
 
     // ============================ Dibujar Paso Peatonal =========================
 
-    private void dibujarPasoJuntoManzana(int fila, int columna, float x, float z) { //3.1
-        // Calle derecha de la manzana: calle vertical. //3.1
-        float xCalleDerecha = centro(columna + 1); //3.1
-        float zEsquinaDerecha = z + 3.7f; //3.1
-
-        // Calle inferior de la manzana: calle horizontal. //3.1
-        float xEsquinaInferior = x + 3.7f; //3.1
-        float zCalleInferior = centro(fila + 1); //3.1
-
-        // En calle vertical, franjas verticales. //3.1
-        dibujarPasoVertical(xCalleDerecha, zEsquinaDerecha); //3.1
-
-        // En calle horizontal, franjas horizontales. //3.1
-        dibujarPasoHorizontal(xEsquinaInferior, zCalleInferior); //3.1
-    } //3.1
+    /** Pinta los cuatro cruces peatonales de cada interseccion interna. */
+    private void dibujarPasosCebra() {
+        for (int fila = 2; fila < MAPA.length - 2; fila += 2) {
+            for (int columna = 2; columna < MAPA[fila].length - 2; columna += 2) {
+                float x = centro(columna);
+                float z = centro(fila);
+                // Lados norte y sur de las calles verticales.
+                dibujarPasoVertical(x, z - 6.3f);
+                dibujarPasoVertical(x, z + 6.3f);
+                // Lados este y oeste de las calles horizontales.
+                dibujarPasoHorizontal(x - 6.3f, z);
+                dibujarPasoHorizontal(x + 6.3f, z);
+            }
+        }
+    }
 
     private void dibujarPasoVertical(float x, float z) { //3.1
         for (float desplazamiento = -4.0f; desplazamiento <= 4.0f; desplazamiento += 1.0f) { //3.1
@@ -765,6 +816,18 @@ public class AppCiudad {
         vector("uEmision", emisionR, emisionG, emisionB); //2.4
         decimal("uGiro", 0); //2.4
         glDrawArrays(GL_TRIANGLES, 0, 36); // 36 vertices = 12 triangulos = 6 caras // 2.4
+    }
+
+    protected void cajaGiradaEmisiva(float x, float y, float z,
+            float sx, float sy, float sz,
+            float r, float g, float b,
+            float emisionR, float emisionG, float emisionB, float giro) {
+        vector("uPos", x, y, z);
+        vector("uEscala", sx, sy, sz);
+        vector("uColor", r, g, b);
+        vector("uEmision", emisionR, emisionG, emisionB);
+        decimal("uGiro", giro);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
     }
 
     protected int uniform(String nombre){

@@ -1,0 +1,263 @@
+package com.graphics.sistemas;
+
+import com.graphics.entidades.Automovil;
+import com.graphics.entidades.EstadoPersona;
+import com.graphics.entidades.Persona;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Collection;
+import java.util.IdentityHashMap;
+import java.util.Map;
+import java.util.function.IntUnaryOperator;
+
+/** Actualiza el trafico sin realizar llamadas de renderizado OpenGL. */
+public class GestorTrafico {
+    private final List<Automovil> automoviles;
+    private final float[][] semaforos;
+    private final IntUnaryOperator consultarEstadoSemaforo;
+    private final Map<Automovil, Float> tiempoBloqueadoPorJugador = new IdentityHashMap<>();
+    private Automovil automovilJugador;
+    private static final float TIEMPO_ANTES_DE_ESQUIVAR = 2.0f;
+    private static final float DESVIO_LATERAL = 3.6f;
+
+    public GestorTrafico(Automovil[] automoviles, float[][] semaforos,
+            IntUnaryOperator consultarEstadoSemaforo) {
+        this.automoviles = new ArrayList<>();
+        Collections.addAll(this.automoviles, automoviles);
+        this.semaforos = copiarSemaforos(semaforos);
+        this.consultarEstadoSemaforo = consultarEstadoSemaforo;
+    }
+
+    public List<Automovil> getAutomoviles() {
+        return Collections.unmodifiableList(automoviles);
+    }
+
+    /** Registra el auto del jugador para que el trafico tambien respete su espacio. */
+    public void setAutomovilJugador(Automovil automovilJugador) {
+        this.automovilJugador = automovilJugador;
+    }
+
+    public void actualizar(float deltaTime, Collection<Persona> peatones) {
+        for (Automovil automovil : automoviles) {
+            boolean semaforo = debeDetenerseEnSemaforo(automovil);
+            boolean peaton = debeDetenerseAntePeaton(automovil, peatones);
+            boolean otroAuto = debeDetenerseAnteOtroAuto(automovil);
+            boolean jugadorBloquea = debeDetenerseAnteJugador(automovil);
+
+            if (automovil.estaEsquivando()) {
+                if (!semaforo && !peaton && !otroAuto) automovil.actualizar(deltaTime);
+                continue;
+            }
+
+            // Un auto abandonado se rodea tras una breve espera, solo si el carril
+            // lateral y la zona de reincorporacion estan libres.
+            if (!semaforo && !peaton && jugadorBloquea
+                    && automovilJugador.getConductor() == null
+                    && Math.abs(automovilJugador.getVelocidad()) < 0.25f) {
+                float espera = tiempoBloqueadoPorJugador.getOrDefault(automovil, 0.0f) + deltaTime;
+                tiempoBloqueadoPorJugador.put(automovil, espera);
+                if (espera >= TIEMPO_ANTES_DE_ESQUIVAR) {
+                    float ladoPreferido = ladoLibreParaEsquivar(automovil);
+                    float[] lados = {ladoPreferido, -ladoPreferido};
+                    for (float lado : lados) {
+                        if (puedeEsquivar(automovil, peatones, lado)
+                                && automovil.iniciarEvasion(lado,
+                                        automovilJugador.getX(), automovilJugador.getZ())) {
+                            tiempoBloqueadoPorJugador.remove(automovil);
+                            automovil.actualizar(deltaTime);
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            tiempoBloqueadoPorJugador.remove(automovil);
+            if (!semaforo && !peaton && !otroAuto && !jugadorBloquea) {
+                automovil.actualizar(deltaTime);
+            }
+        }
+    }
+
+    private boolean debeDetenerseAnteJugador(Automovil auto) {
+        if (automovilJugador == null || auto == automovilJugador) return false;
+        float frenteX = auto.getObjetivoX() - auto.getX();
+        float frenteZ = auto.getObjetivoZ() - auto.getZ();
+        float longitud = (float) Math.sqrt(frenteX * frenteX + frenteZ * frenteZ);
+        if (longitud < 0.01f) return false;
+        frenteX /= longitud;
+        frenteZ /= longitud;
+        float dx = automovilJugador.getX() - auto.getXCarril();
+        float dz = automovilJugador.getZ() - auto.getZCarril();
+        float adelante = dx * frenteX + dz * frenteZ;
+        float lateral = Math.abs(dx * frenteZ - dz * frenteX);
+        // Espera hasta estar cerca; a 12 m el rodeo se ve prematuro aunque el
+        // auto estacionado todavia no represente un obstaculo inmediato.
+        return adelante > -0.8f && adelante < 7.5f && lateral < 2.0f;
+    }
+
+    private float ladoLibreParaEsquivar(Automovil auto) {
+        float frenteX = auto.getObjetivoX() - auto.getX();
+        float frenteZ = auto.getObjetivoZ() - auto.getZ();
+        float longitud = Math.max(0.01f, (float) Math.sqrt(frenteX * frenteX + frenteZ * frenteZ));
+        frenteX /= longitud;
+        frenteZ /= longitud;
+        float dx = automovilJugador.getX() - auto.getXCarril();
+        float dz = automovilJugador.getZ() - auto.getZCarril();
+        float ladoJugador = dx * frenteZ - dz * frenteX;
+        return ladoJugador >= 0.0f ? -DESVIO_LATERAL : DESVIO_LATERAL;
+    }
+
+    private boolean puedeEsquivar(Automovil auto, Collection<Persona> peatones,
+            float lateral) {
+        float frenteX = auto.getObjetivoX() - auto.getX();
+        float frenteZ = auto.getObjetivoZ() - auto.getZ();
+        float longitud = (float) Math.sqrt(frenteX * frenteX + frenteZ * frenteZ);
+        if (longitud < 0.01f) return false;
+        frenteX /= longitud;
+        frenteZ /= longitud;
+        float ladoX = frenteZ * lateral;
+        float ladoZ = -frenteX * lateral;
+        float[] distanciasAdelante = {0.0f, 4.0f, 8.0f, 11.0f};
+        for (float adelante : distanciasAdelante) {
+            float x = auto.getX() + frenteX * adelante + ladoX;
+            float z = auto.getZ() + frenteZ * adelante + ladoZ;
+            if (automovilJugador != null
+                    && distanciaCuadrada(x, z, automovilJugador.getX(), automovilJugador.getZ()) < 10.0f) {
+                return false;
+            }
+            for (Automovil otro : automoviles) {
+                if (otro != auto && distanciaCuadrada(x, z, otro.getXCarril(), otro.getZCarril()) < 16.0f) {
+                    return false;
+                }
+            }
+            for (Persona peaton : peatones) {
+                if (distanciaCuadrada(x, z, peaton.getX(), peaton.getZ()) < 6.25f) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private float distanciaCuadrada(float x1, float z1, float x2, float z2) {
+        float dx = x1 - x2;
+        float dz = z1 - z2;
+        return dx * dx + dz * dz;
+    }
+
+    /** Conserva una distancia basica cuando dos rutas se encuentran. */
+    private boolean debeDetenerseAnteOtroAuto(Automovil auto) {
+        float frenteX = auto.getObjetivoX() - auto.getX();
+        float frenteZ = auto.getObjetivoZ() - auto.getZ();
+        float longitud = (float) Math.sqrt(frenteX * frenteX + frenteZ * frenteZ);
+        if (longitud < 0.01f) return false;
+        frenteX /= longitud;
+        frenteZ /= longitud;
+
+        for (Automovil otro : automoviles) {
+            if (otro == auto) continue;
+            // La distancia de seguridad aplica a autos que siguen el mismo carril.
+            // Frenar ante cualquier auto cercano bloqueaba dos rutas perpendiculares
+            // cuando ambos llegaban a una interseccion al mismo tiempo.
+            float otroFrenteX = otro.getObjetivoX() - otro.getX();
+            float otroFrenteZ = otro.getObjetivoZ() - otro.getZ();
+            float otroLongitud = (float) Math.sqrt(otroFrenteX * otroFrenteX + otroFrenteZ * otroFrenteZ);
+            if (otroLongitud < 0.01f) continue;
+            otroFrenteX /= otroLongitud;
+            otroFrenteZ /= otroLongitud;
+            float mismoSentido = frenteX * otroFrenteX + frenteZ * otroFrenteZ;
+            if (mismoSentido < 0.85f) continue;
+
+            float dx = otro.getXCarril() - auto.getXCarril();
+            float dz = otro.getZCarril() - auto.getZCarril();
+            float adelante = dx * frenteX + dz * frenteZ;
+            float lateral = Math.abs(dx * frenteZ - dz * frenteX);
+            if (adelante > 0.0f && adelante < 3.4f && lateral < 1.35f) return true;
+        }
+        return false;
+    }
+
+    public void reiniciar() {
+        tiempoBloqueadoPorJugador.clear();
+        for (Automovil automovil : automoviles) {
+            automovil.reiniciar();
+        }
+    }
+
+    private boolean debeDetenerseEnSemaforo(Automovil auto) {
+        float frenteX = auto.getObjetivoX() - auto.getX();
+        float frenteZ = auto.getObjetivoZ() - auto.getZ();
+        float longitud = (float) Math.sqrt(frenteX * frenteX + frenteZ * frenteZ);
+
+        if (longitud < 0.01f) {
+            return false;
+        }
+
+        frenteX /= longitud;
+        frenteZ /= longitud;
+
+        for (float[] semaforo : semaforos) {
+            if (consultarEstadoSemaforo.applyAsInt(Float.floatToIntBits(semaforo[2])) != 0) {
+                continue;
+            }
+
+            float mismoSentido = frenteX * semaforo[3] + frenteZ * semaforo[4];
+            if (mismoSentido < 0.95f) {
+                continue;
+            }
+
+            float haciaSemaforoX = semaforo[0] - auto.getX();
+            float haciaSemaforoZ = semaforo[1] - auto.getZ();
+            float adelante = haciaSemaforoX * frenteX + haciaSemaforoZ * frenteZ;
+            float lateral = Math.abs(haciaSemaforoX * frenteZ - haciaSemaforoZ * frenteX);
+
+            // Mantiene la misma distancia de parada anterior a la esquina.
+            if (adelante > 0.4f && adelante < 3.5f && lateral < 5.2f) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Evita que el trafico avance hacia una persona que esta cruzando. */
+    private boolean debeDetenerseAntePeaton(Automovil auto, Collection<Persona> peatones) {
+        float frenteX = auto.getObjetivoX() - auto.getX();
+        float frenteZ = auto.getObjetivoZ() - auto.getZ();
+        float longitud = (float) Math.sqrt(frenteX * frenteX + frenteZ * frenteZ);
+        if (longitud < 0.01f) return false;
+        frenteX /= longitud;
+        frenteZ /= longitud;
+
+        for (Persona peaton : peatones) {
+            EstadoPersona estadoPeaton = peaton.getEstado();
+            // Un peatón que espera permanece en la acera y no debe detener
+            // toda la fila de autos; el semáforo ya regula cuándo puede cruzar.
+            boolean cruzando = estadoPeaton == EstadoPersona.CRUZANDO;
+            if (!cruzando) continue;
+            float haciaX = peaton.getX() - auto.getXCarril();
+            float haciaZ = peaton.getZ() - auto.getZCarril();
+            float adelante = haciaX * frenteX + haciaZ * frenteZ;
+            float lateral = Math.abs(haciaX * frenteZ - haciaZ * frenteX);
+            // Solo frena si el peatón está realmente delante y dentro del
+            // corredor del auto; evita congelar rutas cercanas pero paralelas.
+            // El auto cede ante una persona solo cuando la trayectoria se
+            // superpone de verdad con su huella. Un radio amplio hacia delante
+            // hace que cada peaton del cruce detenga varias cuadras de trafico.
+            float distanciaFrenado = 4.2f;
+            if (adelante > -0.4f && adelante < distanciaFrenado && lateral < 1.55f) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private float[][] copiarSemaforos(float[][] originales) {
+        float[][] copia = new float[originales.length][];
+        for (int i = 0; i < originales.length; i++) {
+            copia[i] = originales[i].clone();
+        }
+        return copia;
+    }
+}

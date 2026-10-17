@@ -30,7 +30,7 @@
 
     <!--Clase que contiene un public static void main -->
     
-    <main.class>com.graphics.Vehiculo</main.class>
+    <main.class>com.graphics.SimuladorCiudad</main.class>
     
 
     <!-- # NUEVA LÍNEA: define UTF-8 para eliminar las advertencias de Maven -->

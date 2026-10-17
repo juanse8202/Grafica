@@ -13,14 +13,14 @@ import static org.lwjgl.opengl.GL33.*;
 
 public class PanelHUD implements AutoCloseable {
 
-    private static final int ANCHO = 440;
+    private static final int ANCHO = 390;
 
     private final int programa;
     private final int vao;
     private final int textura;
 
     private String ultimoEstado = "";
-    private int altoPanel = 140;
+    private int altoPanel = 110;
 
     public PanelHUD() {
         String vertexShader = """
@@ -41,8 +41,8 @@ public class PanelHUD implements AutoCloseable {
 
                     uv = vertices[gl_VertexID];
 
-                    // Panel situado a 16 pixeles de la esquina superior izquierda.
-                    vec2 pixel = vec2(16.0) + uv * uTamano;
+                    // Panel compacto situado cerca de la esquina superior izquierda.
+                    vec2 pixel = vec2(12.0) + uv * uTamano;
 
                     gl_Position = vec4(
                         pixel.x / uVentana.x * 2.0 - 1.0,
@@ -94,17 +94,21 @@ public class PanelHUD implements AutoCloseable {
     }
 
     public void dibujar(int ancho, int alto, float velocidad,
-                        boolean faros, boolean noche, boolean ayuda) {
+                        boolean faros, boolean noche, boolean ayuda,
+                        boolean conduciendo, String motivoBloqueo,
+                        String accionEntrega, String zona) {
 
         int kmh = Math.round(Math.abs(velocidad) * 3.6f);
-        String estado = kmh + "|" + faros + "|" + noche + "|" + ayuda;
+        String estado = kmh + "|" + faros + "|" + noche + "|" + ayuda + "|"
+                + conduciendo + "|" + motivoBloqueo + "|" + accionEntrega + "|" + zona;
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, textura);
 
         // Solo genera otra imagen cuando cambia la informacion.
         if (!estado.equals(ultimoEstado)) {
-            actualizarTextura(kmh, faros, noche, ayuda);
+            actualizarTextura(kmh, faros, noche, ayuda, conduciendo, velocidad,
+                    motivoBloqueo, accionEntrega, zona);
             ultimoEstado = estado;
         }
 
@@ -112,6 +116,7 @@ public class PanelHUD implements AutoCloseable {
                 Math.max(1, ancho - 32) / (float) ANCHO,
                 Math.max(1, alto - 32) / (float) altoPanel
         ));
+        escala *= 0.78f;
 
         // El panel debe aparecer por encima de la ciudad.
         boolean profundidad = glIsEnabled(GL_DEPTH_TEST);
@@ -139,9 +144,13 @@ public class PanelHUD implements AutoCloseable {
     }
 
     private void actualizarTextura(int kmh, boolean faros,
-                                   boolean noche, boolean ayuda) {
+                                   boolean noche, boolean ayuda, boolean conduciendo,
+                                   float velocidad, String motivoBloqueo,
+                                   String accionEntrega, String zona) {
 
-        altoPanel = ayuda ? 370 : 140;
+        altoPanel = ayuda ? 365 : 154
+                + (motivoBloqueo.isEmpty() ? 0 : 32)
+                + (accionEntrega.isEmpty() ? 0 : 26);
 
         BufferedImage imagen = new BufferedImage(
                 ANCHO, altoPanel, BufferedImage.TYPE_INT_ARGB
@@ -157,42 +166,85 @@ public class PanelHUD implements AutoCloseable {
         g.setColor(new Color(80, 190, 220));
         g.drawRect(0, 0, ANCHO - 1, altoPanel - 1);
 
-        g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 20));
+        g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 18));
         g.setColor(Color.WHITE);
-        g.drawString("VELOCIDAD: " + kmh + " km/h", 18, 32);
+        g.drawString(conduciendo
+                ? "VELOCIDAD: " + kmh + " km/h"
+                : "CAMINATA: " + String.format(java.util.Locale.ROOT, "%.1f", velocidad) + " m/s",
+                16, 27);
 
-        g.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 17));
+        g.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 14));
         g.setColor(faros ? new Color(110, 240, 140) : Color.LIGHT_GRAY);
         g.drawString("FAROS: " + (faros ? "ENCENDIDOS" : "APAGADOS"),
-                18, 60);
+                16, 51);
 
         g.setColor(Color.WHITE);
-        g.drawString("AMBIENTE: " + (noche ? "NOCHE" : "DIA"), 18, 88);
+        g.drawString("AMBIENTE: " + (noche ? "NOCHE" : "DIA"), 16, 73);
 
         g.setColor(new Color(100, 205, 240));
         g.drawString("H: " + (ayuda ? "Ocultar controles" : "Ver controles"),
-                18, 116);
+                16, 95);
+
+        if (!ayuda) {
+            g.setColor(new Color(255, 210, 105));
+            g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 13));
+            g.drawString("SECTOR: " + zona, 16, 120);
+        }
+
+        if (!ayuda && !motivoBloqueo.isEmpty()) {
+            g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 14));
+            g.setColor(new Color(255, 150, 105));
+            g.drawString("BLOQUEADO POR: " + motivoBloqueo.toUpperCase(java.util.Locale.ROOT),
+                    16, 150);
+        }
+
+        if (!ayuda && !accionEntrega.isEmpty()) {
+            g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 14));
+            g.setColor(new Color(255, 210, 105));
+            int y = motivoBloqueo.isEmpty() ? 150 : 182;
+            g.drawString(accionEntrega, 16, y);
+        }
+
+        g.setColor(Color.WHITE);
+        g.drawString("ESTADO: " + (conduciendo ? "CONDUCIENDO" : "A PIE"), 205, 27);
 
         if (ayuda) {
             g.setColor(Color.WHITE);
-            g.drawString("CONTROLES", 18, 152);
+            g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 14));
+            g.drawString("CONTROLES", 16, 122);
 
-            String[] controles = {
-                "W / S o arriba / abajo: acelerar / retroceder",
-                "A / D o izquierda / derecha: girar",
-                "Espacio: frenar",
-                "C: cambiar camara",
-                "F: encender / apagar faros",
-                "N: cambiar dia / noche",
-                "M: mostrar / ocultar minimapa",
-                "R: reiniciar",
-                "Esc: salir"
-            };
+            String[] controles = conduciendo
+                    ? new String[]{
+                        "W/S o flechas arriba/abajo: acelerar / retroceder",
+                        "W o flecha arriba + Shift: turbo",
+                        "A/D o flechas izquierda/derecha: girar",
+                        "Espacio: frenar",
+                        "C: cambiar camara",
+                        "F: encender / apagar faros",
+                        "N: cambiar dia / noche",
+                        "M: mostrar / ocultar minimapa",
+                        "R: reiniciar",
+                        "E: salir del auto",
+                        "Esc: salir"
+                    }
+                    : new String[]{
+                        "W/A/S/D: mover a la persona",
+                        "W + Shift: correr",
+                        "Flechas izquierda/derecha: orbitar camara",
+                        "Flechas arriba/abajo: subir o bajar camara",
+                        "C: cambiar camara",
+                        "F: encender / apagar faros",
+                        "N: cambiar dia / noche",
+                        "M: mostrar / ocultar minimapa",
+                        "R: reiniciar",
+                        "E: entregar en el destino o subir al auto",
+                        "Esc: salir"
+                    };
 
-            g.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 16));
+            g.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 14));
 
             for (int i = 0; i < controles.length; i++) {
-                g.drawString(controles[i], 18, 180 + i * 20);
+                g.drawString(controles[i], 16, 148 + i * 18);
             }
         }
 

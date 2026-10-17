@@ -34,14 +34,14 @@ mvn test
 mvn compile exec:java
 ```
 
-Este comando ejecuta `com.graphics.App`.
+Este comando ejecuta `com.graphics.SimuladorCiudad`.
 
 Para ejecutar la aplicacion con movimiento del teclado:
 
 ```powershell
 mvn compile exec:java "-Dexec.mainClass=com.graphics.AppMovimientoTeclado"
 
-mvn compile exec:java "-Dexec.mainClass=com.graphics.Vehiculo"
+mvn compile exec:java "-Dexec.mainClass=com.graphics.SimuladorCiudad"
 ```
 
 La aplicacion crea una ventana OpenGL con un triangulo.
