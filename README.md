@@ -40,6 +40,8 @@ Para ejecutar la aplicacion con movimiento del teclado:
 
 ```powershell
 mvn compile exec:java "-Dexec.mainClass=com.graphics.AppMovimientoTeclado"
+
+mvn compile exec:java "-Dexec.mainClass=com.graphics.Vehiculo"
 ```
 
 La aplicacion crea una ventana OpenGL con un triangulo.
